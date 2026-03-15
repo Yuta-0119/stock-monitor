@@ -102,13 +102,16 @@ def get_bq_client() -> bigquery.Client:
     """
     scopes = ["https://www.googleapis.com/auth/bigquery.readonly"]
 
-    # ① Streamlit Cloud secrets 対応
-    if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-        creds = service_account.Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]),
-            scopes=scopes,
-        )
-        return bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
+    # ① Streamlit Cloud secrets 対応（secrets.toml が存在しない場合は無視）
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds = service_account.Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]),
+                scopes=scopes,
+            )
+            return bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
+    except Exception:
+        pass  # secrets.toml 未設定時（ローカル環境）はスキップ
 
     # ② ローカル: サービスアカウントキーファイル
     creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "sa-key.json")
