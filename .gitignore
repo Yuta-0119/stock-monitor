@@ -1,0 +1,24 @@
+# 機密情報
+.env
+sa-key.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# テスト・修正スクリプト（一時ファイル）
+test_*.py
+fix_*.py
+check_cols.py
+*.log
+test_financial_log.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+*.bak
+
+init_log.txt
