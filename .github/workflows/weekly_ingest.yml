@@ -33,4 +33,4 @@ jobs:
         run: python -m src.main --mode weekly
         env:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
-          BQ_PROJECT: ${{ secrets.BQ_PROJECT }}
+          BQ_PROJECT: onitsuka-app

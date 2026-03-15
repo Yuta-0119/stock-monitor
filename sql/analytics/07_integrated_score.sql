@@ -49,6 +49,9 @@ SELECT
   env.topix_close,
   env.market_phase,
   env.environment_score,
+  -- 決算情報
+  ern.next_earnings_date,
+  ern.days_to_earnings,
   -- ★ 窪田トレードスコア（ボラ2点 + チャート7点 = 9点満点）
   IFNULL(vol.volatility_score, 0) + IFNULL(cht.chart_score, 0) AS kubota_trade_score,
   -- ★ 成長株投資スコア（29点満点）
@@ -74,12 +77,17 @@ SELECT
       AND cht.consolidation = TRUE
     THEN 'WATCH（放れ待ち）'
     ELSE '-'
-  END AS kubota_signal
+  END AS kubota_signal,
+  -- ★ 価格強度スコア（需給代替指標 / 3点満点）
+  -- margin_interest APIはStandardプランで利用不可のため株価位置で代替
+  (CASE WHEN cht.near_52w_high = TRUE THEN 2 ELSE 0 END)
+  + (CASE WHEN cht.volume_ratio >= 1.5 THEN 1 ELSE 0 END) AS price_strength_score
 FROM `onitsuka-app.stock_master.equity_master` em
 LEFT JOIN `onitsuka-app.analytics.kubota_liquidity`  liq ON em.code = liq.code
 LEFT JOIN `onitsuka-app.analytics.kubota_volatility` vol ON em.code = vol.code
 LEFT JOIN `onitsuka-app.analytics.kubota_chart`      cht ON em.code = cht.code
 LEFT JOIN `onitsuka-app.analytics.fundamental_score` fnd ON em.code = fnd.code
 LEFT JOIN `onitsuka-app.analytics.valuation_score`   val ON em.code = val.code
+LEFT JOIN `onitsuka-app.analytics.earnings_next`     ern ON em.code = ern.code
 CROSS JOIN `onitsuka-app.analytics.market_environment` env
 WHERE em.market_segment LIKE '%プライム%';

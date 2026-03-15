@@ -59,6 +59,75 @@ def run_setup(loader: BQLoader):
     logger.info("✅ テーブル作成完了")
 
 
+def run_snapshot(config: Config):
+    """score_history テーブルへ当日スナップショットを追記"""
+    logger.info("=== スコア履歴スナップショット開始 ===")
+
+    from google.cloud import bigquery
+    bq = bigquery.Client(project=config.bq_project, location=config.bq_location)
+
+    # ① テーブルが存在しなければ作成
+    ddl = f"""
+    CREATE TABLE IF NOT EXISTS `{config.bq_project}.{config.ds_analytics}.score_history` (
+      snapshot_date         DATE,
+      code                  STRING,
+      company_name          STRING,
+      sector33_name         STRING,
+      market_segment        STRING,
+      latest_close          FLOAT64,
+      avg_turnover_20d_oku  FLOAT64,
+      liquidity_grade       STRING,
+      volatility_score      INT64,
+      chart_score           INT64,
+      kubota_trade_score    INT64,
+      sales_cagr_3y_pct     FLOAT64,
+      op_cagr_3y_pct        FLOAT64,
+      roe_pct               FLOAT64,
+      roic_pct              FLOAT64,
+      growth_invest_score   INT64,
+      per                   FLOAT64,
+      pbr                   FLOAT64,
+      market_phase          STRING,
+      kubota_signal         STRING,
+      screening_status      STRING
+    )
+    PARTITION BY snapshot_date
+    OPTIONS(require_partition_filter = FALSE)
+    """
+    bq.query(ddl).result()
+
+    # ② 本日分がまだ未挿入の場合のみ INSERT
+    check_df = bq.query(f"""
+        SELECT COUNT(*) AS cnt
+        FROM `{config.bq_project}.{config.ds_analytics}.score_history`
+        WHERE snapshot_date = CURRENT_DATE('Asia/Tokyo')
+    """).to_dataframe(create_bqstorage_client=False)
+
+    if check_df["cnt"].iloc[0] > 0:
+        logger.info("  本日のスナップショットは取込み済みのためスキップ")
+        return
+
+    insert_sql = f"""
+    INSERT INTO `{config.bq_project}.{config.ds_analytics}.score_history`
+    SELECT
+      CURRENT_DATE('Asia/Tokyo') AS snapshot_date,
+      code, company_name, sector33_name, market_segment,
+      latest_close, avg_turnover_20d_oku, liquidity_grade,
+      CAST(volatility_score  AS INT64),
+      CAST(chart_score       AS INT64),
+      CAST(kubota_trade_score AS INT64),
+      sales_cagr_3y_pct, op_cagr_3y_pct, roe_pct, roic_pct,
+      CAST(growth_invest_score AS INT64),
+      per, pbr, market_phase, kubota_signal, screening_status
+    FROM `{config.bq_project}.{config.ds_analytics}.integrated_score`
+    WHERE screening_status = 'ACTIVE'
+    """
+    job = bq.query(insert_sql)
+    job.result()
+    logger.info(f"  スナップショット完了: {job.num_dml_affected_rows} 行挿入")
+    logger.info("✅ スコア履歴スナップショット完了")
+
+
 def run_analytics(loader: BQLoader, config: Config):
     """Analytics Layer 作成（BigQuery View群の作成・更新）"""
     logger.info("=== Analytics Layer 構築開始 ===")
@@ -94,6 +163,12 @@ def run_analytics(loader: BQLoader, config: Config):
             raise
 
     logger.info("✅ Analytics Layer 構築完了")
+
+    # スコア履歴スナップショットを追記
+    try:
+        run_snapshot(config)
+    except Exception as e:
+        logger.warning(f"スナップショット失敗（スキップ）: {e}")
 
 
 def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
@@ -237,7 +312,7 @@ def run_weekly(client: JQuantsClient, loader: BQLoader, config: Config):
 def main():
     parser = argparse.ArgumentParser(description="stock-monitor データパイプライン")
     parser.add_argument("--mode", required=True,
-                        choices=["check", "setup", "init", "daily", "weekly", "backfill", "analytics", "export"],
+                        choices=["check", "setup", "init", "daily", "weekly", "backfill", "analytics", "snapshot", "export"],
                         help="実行モード")
     parser.add_argument("--from", dest="from_date", help="開始日 (YYYYMMDD)")
     parser.add_argument("--to", dest="to_date", help="終了日 (YYYYMMDD)")
@@ -272,6 +347,9 @@ def main():
         for sheet, count in results.items():
             logger.info(f"  {sheet}: {count} rows")
         logger.info("✅ エクスポート完了")
+
+    elif args.mode == "snapshot":
+        run_snapshot(config)
 
     elif args.mode == "backfill":
         if not args.from_date or not args.to_date:
