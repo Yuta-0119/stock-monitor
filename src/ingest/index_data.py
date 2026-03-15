@@ -22,11 +22,15 @@ def ingest_topix(client: JQuantsClient, loader: BQLoader, config,
         return 0
 
     df = pd.DataFrame(data)
-    col_map = {"Date": "date", "Open": "open", "High": "high",
-               "Low": "low", "Close": "close"}
+    # 新フォーマット（O/H/L/C）と旧フォーマット（Open/High/Low/Close）の両方をサポート
+    col_map = {
+        "Date": "date",
+        "O": "open", "H": "high", "L": "low", "C": "close",       # 新フォーマット
+        "Open": "open", "High": "high", "Low": "low", "Close": "close",  # 旧フォーマット
+    }
     rename = {k: v for k, v in col_map.items() if k in df.columns}
     df = df.rename(columns=rename)
-    keep = [v for v in col_map.values() if v in df.columns]
+    keep = list(dict.fromkeys(v for v in col_map.values() if v in df.columns))
     df = df[keep]
     df["date"] = pd.to_datetime(df["date"]).dt.date
     for c in ["open", "high", "low", "close"]:

@@ -7,8 +7,20 @@ from src.bq_loader import BQLoader
 logger = logging.getLogger(__name__)
 
 # J-Quants V2 APIレスポンスのカラムマッピング
+# 新フォーマット（CoName等）と旧フォーマット（CompanyName等）の両方をサポート
 COLUMN_MAP = {
+    # 新フォーマット（2024年以降の短縮名）
     "Code": "code",
+    "CoName": "company_name",
+    "CoNameEn": "company_name_english",
+    "S17": "sector17_code",
+    "S17Nm": "sector17_name",
+    "S33": "sector33_code",
+    "S33Nm": "sector33_name",
+    "ScaleCat": "scale_category",
+    "Mkt": "market_code",
+    "MktNm": "market_segment",
+    # 旧フォーマット（互換性維持）
     "CompanyName": "company_name",
     "CompanyNameEnglish": "company_name_english",
     "Sector17Code": "sector17_code",
@@ -34,8 +46,8 @@ def ingest(client: JQuantsClient, loader: BQLoader, config) -> int:
     rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
     df = df.rename(columns=rename)
 
-    # 必要カラムだけ抽出
-    keep_cols = [v for v in COLUMN_MAP.values() if v in df.columns]
+    # 必要カラムだけ抽出（重複除去してから選択）
+    keep_cols = list(dict.fromkeys(v for v in COLUMN_MAP.values() if v in df.columns))
     df = df[keep_cols]
 
     # コードを5桁文字列に統一

@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
+import requests
 from src.jquants_client import JQuantsClient
 from src.bq_loader import BQLoader
 
@@ -77,7 +78,13 @@ def ingest(client: JQuantsClient, loader: BQLoader, config,
             next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
             target_date = next_date.strftime("%Y%m%d")
 
-    data = client.get_financial_summary(date=target_date)
+    try:
+        data = client.get_financial_summary(date=target_date)
+    except requests.exceptions.HTTPError as e:
+        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 400:
+            logger.info(f"No financial data for {target_date} (400 Bad Request - holiday or no disclosure)")
+            return 0
+        raise
     if not data:
         logger.info(f"No financial data for {target_date}")
         return 0

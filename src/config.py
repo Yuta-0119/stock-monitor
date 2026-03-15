@@ -16,7 +16,7 @@ class Config:
 
     # データセット名
     ds_raw: str = "stock_raw"
-    ds_analytics: str = "stock_analytics"
+    ds_analytics: str = "analytics"
     ds_master: str = "stock_master"
     ds_portfolio: str = "portfolio"
 

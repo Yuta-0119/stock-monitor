@@ -13,6 +13,9 @@
   # DDL実行（テーブル作成）
   python -m src.main --mode setup
 
+  # Analytics Layer 作成（BigQuery Viewの作成・更新）
+  python -m src.main --mode analytics
+
   # バックフィル（期間指定）
   python -m src.main --mode backfill --from 20200101 --to 20240101
 """
@@ -54,6 +57,43 @@ def run_setup(loader: BQLoader):
         logger.info(f"Executing: {f}")
         loader.execute_sql_file(f)
     logger.info("✅ テーブル作成完了")
+
+
+def run_analytics(loader: BQLoader, config: Config):
+    """Analytics Layer 作成（BigQuery View群の作成・更新）"""
+    logger.info("=== Analytics Layer 構築開始 ===")
+
+    # analyticsデータセット作成
+    from google.cloud import bigquery
+    client_bq = bigquery.Client(project=config.bq_project, location=config.bq_location)
+    dataset_id = f"{config.bq_project}.{config.ds_analytics}"
+    dataset = bigquery.Dataset(dataset_id)
+    dataset.location = config.bq_location
+    client_bq.create_dataset(dataset, exists_ok=True)
+    logger.info(f"Dataset ready: {dataset_id}")
+
+    # sql/analytics/ 内のSQLを順番に実行
+    import glob as glob_module
+    import os
+    sql_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sql", "analytics")
+    sql_files = sorted(glob_module.glob(os.path.join(sql_dir, "*.sql")))
+    if not sql_files:
+        logger.error(f"No SQL files found in {sql_dir}")
+        sys.exit(1)
+
+    for f in sql_files:
+        logger.info(f"Executing: {os.path.basename(f)}")
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                sql = fh.read().strip()
+            job = client_bq.query(sql)
+            job.result()
+            logger.info(f"  OK: {os.path.basename(f)}")
+        except Exception as e:
+            logger.error(f"  FAILED: {os.path.basename(f)} — {e}")
+            raise
+
+    logger.info("✅ Analytics Layer 構築完了")
 
 
 def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
@@ -197,7 +237,7 @@ def run_weekly(client: JQuantsClient, loader: BQLoader, config: Config):
 def main():
     parser = argparse.ArgumentParser(description="stock-monitor データパイプライン")
     parser.add_argument("--mode", required=True,
-                        choices=["check", "setup", "init", "daily", "weekly", "backfill"],
+                        choices=["check", "setup", "init", "daily", "weekly", "backfill", "analytics", "export"],
                         help="実行モード")
     parser.add_argument("--from", dest="from_date", help="開始日 (YYYYMMDD)")
     parser.add_argument("--to", dest="to_date", help="終了日 (YYYYMMDD)")
@@ -221,6 +261,17 @@ def main():
 
     elif args.mode == "weekly":
         run_weekly(client, loader, config)
+
+    elif args.mode == "analytics":
+        run_analytics(loader, config)
+
+    elif args.mode == "export":
+        from src.export.sheets_exporter import export as run_export
+        logger.info("=== Google Sheets エクスポート開始 ===")
+        results = run_export(config)
+        for sheet, count in results.items():
+            logger.info(f"  {sheet}: {count} rows")
+        logger.info("✅ エクスポート完了")
 
     elif args.mode == "backfill":
         if not args.from_date or not args.to_date:
