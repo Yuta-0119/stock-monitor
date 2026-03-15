@@ -50,6 +50,7 @@ jobs:
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode analytics
         env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           BQ_PROJECT: ${{ secrets.BQ_PROJECT }}
 
       # Step 3: Google Sheets エクスポート（dailyスケジュール実行時のみ）
@@ -57,6 +58,7 @@ jobs:
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode export
         env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           BQ_PROJECT: ${{ secrets.BQ_PROJECT }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
 
