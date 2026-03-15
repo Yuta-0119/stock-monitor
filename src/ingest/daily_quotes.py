@@ -117,6 +117,7 @@ def ingest_bulk(client: JQuantsClient, loader: BQLoader, config,
     if files:
         logger.info(f"Found {len(files)} CSV files for daily quotes")
         total_rows = 0
+        first_write_done = False
 
         for i, file_info in enumerate(files):
             key = file_info.get("Key", "")
@@ -136,7 +137,11 @@ def ingest_bulk(client: JQuantsClient, loader: BQLoader, config,
 
                 if not df.empty:
                     # 初回は WRITE_TRUNCATE、以降は WRITE_APPEND
-                    mode = "WRITE_TRUNCATE" if i == 0 else "WRITE_APPEND"
+                    if not first_write_done:
+                        mode = "WRITE_TRUNCATE"
+                        first_write_done = True
+                    else:
+                        mode = "WRITE_APPEND"
                     rows = loader.load_dataframe(
                         df,
                         f"{config.ds_raw}.daily_quotes",

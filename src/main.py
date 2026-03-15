@@ -87,19 +87,35 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
 
     # 6. 信用取引残高
     from src.ingest.market_data import ingest_margin_interest
-    results["margin_interest"] = ingest_margin_interest(client, loader, config)
+    try:
+        results["margin_interest"] = ingest_margin_interest(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_margin_interest skipped: {e}")
+        results["margin_interest"] = 0
 
     # 7. 空売り比率
     from src.ingest.market_data import ingest_short_selling
-    results["short_selling"] = ingest_short_selling(client, loader, config)
+    try:
+        results["short_selling"] = ingest_short_selling(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_short_selling skipped: {e}")
+        results["short_selling"] = 0
 
     # 8. 投資部門別
     from src.ingest.market_data import ingest_investor_types
-    results["investor_types"] = ingest_investor_types(client, loader, config)
+    try:
+        results["investor_types"] = ingest_investor_types(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_investor_types skipped: {e}")
+        results["investor_types"] = 0
 
     # 9. 決算カレンダー
     from src.ingest.market_data import ingest_earnings_calendar
-    results["earnings_calendar"] = ingest_earnings_calendar(client, loader, config)
+    try:
+        results["earnings_calendar"] = ingest_earnings_calendar(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_earnings_calendar skipped: {e}")
+        results["earnings_calendar"] = 0
 
     logger.info("=== 初期ロード結果 ===")
     for name, count in results.items():
@@ -134,11 +150,19 @@ def run_daily(client: JQuantsClient, loader: BQLoader, config: Config):
 
     # 6. 空売り比率
     from src.ingest.market_data import ingest_short_selling
-    results["short_selling"] = ingest_short_selling(client, loader, config)
+    try:
+        results["short_selling"] = ingest_short_selling(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_short_selling skipped: {e}")
+        results["short_selling"] = 0
 
     # 7. 決算カレンダー
     from src.ingest.market_data import ingest_earnings_calendar
-    results["earnings_calendar"] = ingest_earnings_calendar(client, loader, config)
+    try:
+        results["earnings_calendar"] = ingest_earnings_calendar(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_earnings_calendar skipped: {e}")
+        results["earnings_calendar"] = 0
 
     logger.info("=== 日次バッチ結果 ===")
     total = 0
@@ -158,7 +182,11 @@ def run_weekly(client: JQuantsClient, loader: BQLoader, config: Config):
     results["margin_interest"] = ingest_margin_interest(client, loader, config)
 
     from src.ingest.market_data import ingest_investor_types
-    results["investor_types"] = ingest_investor_types(client, loader, config)
+    try:
+        results["investor_types"] = ingest_investor_types(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_investor_types skipped: {e}")
+        results["investor_types"] = 0
 
     logger.info("=== 週次バッチ結果 ===")
     for name, count in results.items():
