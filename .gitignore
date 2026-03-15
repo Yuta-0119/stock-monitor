@@ -1,6 +1,7 @@
 # 機密情報
 .env
 sa-key.json
+.streamlit/secrets.toml
 
 # Python
 .venv/
