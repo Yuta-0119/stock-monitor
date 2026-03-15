@@ -30,6 +30,18 @@ COLUMN_MAP = {
     "AdjustmentVolume": "adjustment_volume",
 }
 
+# バルクCSV用カラムマップ（省略形）
+COLUMN_MAP_BULK = {
+    "Date": "date",
+    "Code": "code",
+    "O":    "open",
+    "H":    "high",
+    "L":    "low",
+    "C":    "close",
+    "Vo":   "volume",
+    "Va":   "turnover_value",
+}
+
 KEEP_COLS = [
     "date", "code", "open", "high", "low", "close", "volume",
     "turnover_value", "adjustment_factor",
@@ -40,7 +52,9 @@ KEEP_COLS = [
 
 def _transform(df: pd.DataFrame) -> pd.DataFrame:
     """データ変換"""
-    rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
+    # フォーマット自動判別（省略形 or フル名）
+    cmap = COLUMN_MAP_BULK if "O" in df.columns else COLUMN_MAP
+    rename = {k: v for k, v in cmap.items() if k in df.columns}
     df = df.rename(columns=rename)
     keep = [c for c in KEEP_COLS if c in df.columns]
     df = df[keep]

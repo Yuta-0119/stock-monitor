@@ -79,7 +79,11 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
 
     # 5. 指数データ
     from src.ingest.index_data import ingest_indices
-    results["indices"] = ingest_indices(client, loader, config)
+    try:
+        results["indices"] = ingest_indices(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_indices skipped: {e}")
+        results["indices"] = 0
 
     # 6. 信用取引残高
     from src.ingest.market_data import ingest_margin_interest
