@@ -433,10 +433,13 @@ def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
         check(str(stock.get("financial_health", "")) == "PASS",
               "財務健全",
               "財務に注意あり")
-        check(pd.notna(days_to_earn) and days_to_earn > 20 if pd.notna(days_to_earn) else True,
-              f"決算まで余裕あり（{int(days_to_earn)}日後）" if pd.notna(days_to_earn) else "決算日不明",
-              f"⚠ 決算が近い（{int(days_to_earn)}日後）― リスク注意",
-              warn=pd.notna(days_to_earn) and days_to_earn <= 20)
+        earn_int = int(days_to_earn) if pd.notna(days_to_earn) else None
+        check(
+            earn_int is None or earn_int > 20,
+            f"決算まで余裕あり（{earn_int}日後）" if earn_int is not None else "決算日不明",
+            f"⚠ 決算が近い（{earn_int}日後）― リスク注意" if earn_int is not None else "決算日不明",
+            warn=earn_int is not None and earn_int <= 20,
+        )
 
     # ── スコアサマリー ──
     st.markdown("#### 📊 スコアサマリー")
