@@ -146,7 +146,7 @@ def load_market_env() -> pd.DataFrame:
 def load_screening() -> pd.DataFrame:
     return _bq("""
         SELECT
-          code, company_name, sector_33_code_name AS sector33_name,
+          code, company_name, sector33_name,
           latest_close, avg_turnover_20d_oku, liquidity_grade,
           volatility_score, chart_score, kubota_trade_score,
           sales_cagr_3y_pct, op_cagr_3y_pct, roe_pct, roic_pct,
@@ -441,7 +441,8 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
         "kubota_signal": "シグナル",
         "days_to_earnings": "決算(日)",
     }
-    df_show = df_f[list(COLS.keys())].rename(columns=COLS)
+    existing = [c for c in COLS.keys() if c in df_f.columns]
+    df_show = df_f[existing].rename(columns=COLS)
 
     st.dataframe(
         df_show.style.apply(_style_screening, axis=None),
