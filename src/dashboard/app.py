@@ -314,6 +314,162 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
 
 
 # ─────────────────────────────────────────
+# 用語解説・買い売り判定パネル
+# ─────────────────────────────────────────
+
+GLOSSARY = {
+    "窪田スコア（0〜10点）": "「銘柄選びの教科書」著者・窪田剛氏のフレームワークに基づくトレード適性スコア。ボラティリティ（値動きの激しさ）とチャートの形状から算出。10点に近いほどトレードチャンス。",
+    "成長株スコア（0〜29点）": "売上・利益の成長率（CAGR）、ROE（自己資本利益率）、ROIC（投下資本利益率）、PER・PBRのバリュエーションを総合したスコア。29点に近いほど優良成長株。",
+    "ENTRY SIGNAL（買いシグナル）": "5つの条件（相場上昇・ATR≥1.5%・HV収縮・レンジ収縮・出来高急増）がすべて揃った銘柄。積極的なエントリーを検討できる状態。",
+    "WATCH（放れ待ち）": "コンソリデーション（株価が一定レンジに収まった煮詰まり状態）に入っている銘柄。ブレイクアウト（価格が放れるタイミング）を待つ状態。",
+    "ATR（平均真値幅）": "過去14日間の平均的な1日の値動き幅。ATR%が1.5%以上あると「十分な値動き」と判定。小さすぎると利益が取りにくい。",
+    "HV収縮": "過去20日のボラティリティ（HV20）が過去60日（HV60）より小さい状態。株価が静まり返っている時期で、ブレイクアウト前の特徴。",
+    "MA200（200日移動平均線）": "過去200営業日の終値の平均値。長期トレンドの目安。株価がMA200の上方にあり、MA200が右肩上がりであれば長期上昇トレンド。",
+    "売買代金（億円）": "1日に取引された金額の20日平均。10億円以上あると十分な流動性（売買のしやすさ）があると判断。",
+    "ROE（自己資本利益率）": "会社が株主から預かったお金（自己資本）をどれだけ効率よく使って利益を出しているか。15%以上が優良。",
+    "ROIC（投下資本利益率）": "事業に投下した資金全体（借金+自己資本）に対してどれだけ利益を生んでいるか。12%以上が目安。",
+    "売上CAGR（3年成長率）": "3年間の年平均売上成長率。15%以上あると高成長企業と判断。",
+    "PER（株価収益率）": "株価÷1株当たり利益。同業他社比で割安かどうかの目安。低いほど割安とされるが成長株は高めになりやすい。",
+    "PBR（株価純資産倍率）": "株価÷1株純資産。1倍割れは「解散価値以下」とされ割安の目安。",
+    "相場フェーズ（BULL/BEAR/NEUTRAL）": "BULL=強気相場（買いに有利）、BEAR=弱気相場（買い控えを推奨）、NEUTRAL=中立。TOPIXのMA200トレンドから判定。",
+}
+
+
+def _glossary_expander():
+    with st.expander("📖 用語集・指標の見方（わからない言葉はここで確認）"):
+        cols = st.columns(2)
+        items = list(GLOSSARY.items())
+        half = (len(items) + 1) // 2
+        for i, (term, desc) in enumerate(items):
+            col = cols[0] if i < half else cols[1]
+            with col:
+                st.markdown(f"**{term}**")
+                st.caption(desc)
+                st.markdown("")
+
+
+def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
+    """銘柄の買い時・売り時判定パネル"""
+    signal = str(stock.get("kubota_signal", "-"))
+    days_to_earn = pd.to_numeric(stock.get("days_to_earnings"), errors="coerce")
+
+    # ── 総合判定バッジ ──
+    if signal == "ENTRY SIGNAL":
+        st.markdown("""
+        <div style="background:#a6e3a1;color:#1e1e2e;border-radius:12px;padding:14px 20px;
+                    text-align:center;font-size:1.3em;font-weight:700;margin-bottom:12px;">
+            🟢 今すぐ買い検討できる状態（ENTRY SIGNAL）
+        </div>""", unsafe_allow_html=True)
+        st.caption("5つの条件がすべて揃っています。損切りラインを設定した上でエントリーを検討してください。")
+    elif "WATCH" in signal:
+        st.markdown("""
+        <div style="background:#f9e2af;color:#1e1e2e;border-radius:12px;padding:14px 20px;
+                    text-align:center;font-size:1.3em;font-weight:700;margin-bottom:12px;">
+            🟡 放れ待ち（WATCH）― もう少し待つタイミング
+        </div>""", unsafe_allow_html=True)
+        st.caption("株価が煮詰まっています。出来高を伴ったブレイクアウト（価格が上放れ）を確認してからエントリーを検討。")
+    else:
+        st.markdown("""
+        <div style="background:#45475a;color:#cdd6f4;border-radius:12px;padding:14px 20px;
+                    text-align:center;font-size:1.3em;font-weight:700;margin-bottom:12px;">
+            ⚪ まだ条件未達 ― 監視継続
+        </div>""", unsafe_allow_html=True)
+        st.caption("買いの条件が揃っていません。スコアが改善するまで監視を続けてください。")
+
+    # ── 決算アラート ──
+    if pd.notna(days_to_earn) and days_to_earn <= 20:
+        color = "#f38ba8" if days_to_earn <= 10 else "#fab387"
+        st.markdown(
+            f'<div style="background:{color};color:#1e1e2e;border-radius:8px;padding:8px 14px;'
+            f'font-weight:700;margin-bottom:10px;">⚠️ 決算発表まで約{int(days_to_earn)}日 '
+            f'― 決算またぎは値動きが大きくなるため注意</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── 条件チェックリスト ──
+    st.markdown("#### 📋 買い条件チェックリスト")
+
+    def check(cond: bool, ok_msg: str, ng_msg: str, warn: bool = False):
+        if cond:
+            st.markdown(f"✅ &nbsp; {ok_msg}", unsafe_allow_html=True)
+        elif warn:
+            st.markdown(f"⚠️ &nbsp; {ng_msg}", unsafe_allow_html=True)
+        else:
+            st.markdown(f"❌ &nbsp; {ng_msg}", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**📈 相場・チャート条件**")
+        check(market_phase == "BULL",
+              "相場は上昇トレンド（BULL）",
+              f"相場は{'下落' if market_phase == 'BEAR' else '中立'}（BULL でない）")
+        check(str(stock.get("ma200_trend", "")) == "UP",
+              "MA200 が右肩上がり（長期上昇トレンド）",
+              "MA200 が横ばい or 下向き")
+        check(str(stock.get("price_vs_ma200", "")) == "ABOVE",
+              "株価が MA200 の上にある",
+              "株価が MA200 を下回っている")
+        check(bool(stock.get("consolidation", False)),
+              "レンジ収縮中（煮詰まり状態）",
+              "まだレンジ収縮していない")
+        check(bool(stock.get("volume_surge", False)),
+              "出来高急増（平均の1.5倍以上）",
+              "出来高はまだ平均的")
+
+    with col2:
+        st.markdown("**💰 ファンダメンタル条件**")
+        liq = str(stock.get("liquidity_grade", ""))
+        check(liq in ("PASS_A", "PASS_B", "PASS_C"),
+              f"流動性OK（{liq}）― 売買しやすい",
+              "流動性不足 ― 売買しにくい可能性あり")
+        sales_cagr = pd.to_numeric(stock.get("sales_cagr_3y_pct"), errors="coerce")
+        check(pd.notna(sales_cagr) and sales_cagr >= 5,
+              f"売上成長中（{sales_cagr:.1f}%/年）",
+              f"売上成長が低い（{sales_cagr:.1f}%）" if pd.notna(sales_cagr) else "売上データなし")
+        roe = pd.to_numeric(stock.get("roe_pct"), errors="coerce")
+        check(pd.notna(roe) and roe >= 10,
+              f"ROE 良好（{roe:.1f}%）",
+              f"ROE が低い（{roe:.1f}%）" if pd.notna(roe) else "ROEデータなし")
+        check(str(stock.get("financial_health", "")) == "PASS",
+              "財務健全",
+              "財務に注意あり")
+        check(pd.notna(days_to_earn) and days_to_earn > 20 if pd.notna(days_to_earn) else True,
+              f"決算まで余裕あり（{int(days_to_earn)}日後）" if pd.notna(days_to_earn) else "決算日不明",
+              f"⚠ 決算が近い（{int(days_to_earn)}日後）― リスク注意",
+              warn=pd.notna(days_to_earn) and days_to_earn <= 20)
+
+    # ── スコアサマリー ──
+    st.markdown("#### 📊 スコアサマリー")
+    ksc = pd.to_numeric(stock.get("kubota_trade_score"), errors="coerce")
+    gsc = pd.to_numeric(stock.get("growth_invest_score"), errors="coerce")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric(
+            "窪田スコア",
+            f"{ksc:.0f} / 10" if pd.notna(ksc) else "N/A",
+            help="チャート形状・ボラティリティの総合点。7点以上が狙い目。",
+        )
+        bar_k = int(ksc / 10 * 100) if pd.notna(ksc) else 0
+        st.markdown(
+            f'<div style="background:#313244;border-radius:6px;height:10px;">'
+            f'<div style="width:{bar_k}%;height:100%;border-radius:6px;background:#a6e3a1;"></div></div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.metric(
+            "成長株スコア",
+            f"{gsc:.0f} / 29" if pd.notna(gsc) else "N/A",
+            help="売上CAGR・ROE・ROIC・PER・PBRの総合点。15点以上が狙い目。",
+        )
+        bar_g = int(gsc / 29 * 100) if pd.notna(gsc) else 0
+        st.markdown(
+            f'<div style="background:#313244;border-radius:6px;height:10px;">'
+            f'<div style="width:{bar_g}%;height:100%;border-radius:6px;background:#74c7ec;"></div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ─────────────────────────────────────────
 # サイドバー
 # ─────────────────────────────────────────
 def render_sidebar(df_screening: pd.DataFrame):
@@ -343,16 +499,20 @@ def render_sidebar(df_screening: pd.DataFrame):
         st.divider()
 
         # フィルター
-        st.markdown("### 🔎 フィルター")
+        st.markdown("### 🔎 銘柄絞り込み")
         sectors = ["すべて"] + sorted(
             df_screening["sector33_name"].dropna().unique().tolist()
         ) if not df_screening.empty else ["すべて"]
-        sel_sector = st.selectbox("セクター", sectors)
+        sel_sector = st.selectbox("セクター", sectors,
+            help="特定の業種に絞って表示します。")
 
-        min_kubota = st.slider("窪田スコア（最低）", 0, 10, 0)
-        min_growth = st.slider("成長株スコア（最低）", 0, 29, 0)
+        min_kubota = st.slider("窪田スコア（最低）", 0, 10, 0,
+            help="チャート・ボラティリティのスコア。7以上に絞ると有望銘柄のみ表示。")
+        min_growth = st.slider("成長株スコア（最低）", 0, 29, 0,
+            help="売上成長・ROE・PERなどのスコア。15以上に絞ると優良成長株のみ表示。")
         sig_opts = ["すべて", "ENTRY SIGNAL", "WATCH（放れ待ち）"]
-        sel_signal = st.selectbox("シグナル", sig_opts)
+        sel_signal = st.selectbox("シグナル", sig_opts,
+            help="「ENTRY SIGNAL」＝今すぐ買い検討できる銘柄。「WATCH」＝ブレイクアウト待ちの銘柄。")
 
         st.divider()
 
@@ -389,20 +549,32 @@ def render_market_header(df_env: pd.DataFrame):
             unsafe_allow_html=True
         )
     with c2:
-        st.metric("TOPIX", f"{topix_close:,.2f}",
-                  delta=f"{diff:+.2f} vs MA200")
+        st.metric("TOPIX（東証全体の指数）", f"{topix_close:,.2f}",
+                  delta=f"{diff:+.2f} vs MA200（200日平均）",
+                  help="東証プライム全銘柄の加重平均株価指数。相場全体の動きを示す。")
     with c3:
-        st.metric("TOPIX MA200", f"{topix_ma200:,.2f}")
+        st.metric("TOPIX MA200（長期平均）", f"{topix_ma200:,.2f}",
+                  help="過去200営業日のTOPIX平均値。これが右肩上がりで株価がMA200の上にあれば強気相場。")
     with c4:
-        st.metric("環境スコア", f"{env_score}/3", delta=env_label)
+        st.metric("環境スコア", f"{env_score}/3", delta=env_label,
+                  help="3/3=強気（積極的に買える）、2/3=中立、1/3=弱気（買い控えを推奨）")
     with c5:
-        above = "MA200 上方" if topix_close > topix_ma200 else "MA200 下方"
-        color = "normal" if topix_close > topix_ma200 else "inverse"
-        st.metric("位置", above)
+        above = "MA200 上方 ✅" if topix_close > topix_ma200 else "MA200 下方 ⚠️"
+        st.metric("現在位置", above,
+                  help="株価がMA200の上にあれば上昇トレンド継続。下にあれば注意が必要。")
 
 
 def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, sel_signal):
     st.subheader("🔍 スクリーニング結果")
+
+    st.info(
+        "**見方のポイント**　"
+        "🟢 シグナル列が「ENTRY SIGNAL」の銘柄は買いの5条件が揃っています。"
+        "「窪田S」は7点以上、「成長株S」は15点以上を目安に絞り込むと有望銘柄に絞れます。"
+        "「決算(日)」が赤い銘柄は決算発表が近く値動きが荒れやすいため注意してください。",
+        icon="💡",
+    )
+    _glossary_expander()
 
     # フィルター適用
     df_f = df.copy()
@@ -499,12 +671,20 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
 def render_tab_signals(df: pd.DataFrame):
     st.subheader("🚀 エントリーシグナル銘柄")
 
+    st.info(
+        "**ENTRY SIGNAL** ＝ 買いの5条件が揃っている銘柄。損切りラインを決めてからエントリーを検討してください。\n\n"
+        "**WATCH（放れ待ち）** ＝ 株価が一定レンジに収まっている銘柄。出来高を伴ってレンジを上抜けたタイミングで買いを検討。",
+        icon="🚀",
+    )
+
     df_entry = df[df["kubota_signal"] == "ENTRY SIGNAL"].copy()
     df_watch = df[df["kubota_signal"].str.contains("WATCH", na=False)].copy()
 
     c1, c2 = st.columns(2)
-    c1.metric("🟢 ENTRY SIGNAL", f"{len(df_entry)} 銘柄")
-    c2.metric("🟡 WATCH（放れ待ち）", f"{len(df_watch)} 銘柄")
+    c1.metric("🟢 今すぐ買い検討（ENTRY SIGNAL）", f"{len(df_entry)} 銘柄",
+              help="5条件すべて揃った銘柄数")
+    c2.metric("🟡 ブレイクアウト待ち（WATCH）", f"{len(df_watch)} 銘柄",
+              help="煮詰まり状態で放れ待ちの銘柄数")
 
     SIGNAL_COLS = {
         "code": "コード",
@@ -577,26 +757,51 @@ def render_tab_signals(df: pd.DataFrame):
 
 
 def render_tab_chart(df_screening: pd.DataFrame):
-    st.subheader("📊 銘柄別 株価チャート")
+    st.subheader("📌 銘柄詳細・売買タイミング判定")
 
     if df_screening.empty:
         st.warning("スクリーニングデータがありません。")
         return
 
-    # 銘柄選択
-    options = df_screening.apply(
+    st.info(
+        "**使い方** ① 下のボックスで銘柄を選択 → ② チャートと買い時・売り時チェックリストを確認 → ③ 条件が揃っているか判断",
+        icon="📌",
+    )
+
+    # ── 銘柄検索（コード or 会社名で絞れるよう選択肢を工夫）
+    search = st.text_input("🔍 銘柄コード or 会社名で絞り込み（例: 7203、トヨタ）", value="", key="chart_search")
+    if search:
+        mask = (
+            df_screening["code"].str.contains(search, case=False, na=False) |
+            df_screening["company_name"].str.contains(search, case=False, na=False)
+        )
+        df_sel = df_screening[mask]
+    else:
+        df_sel = df_screening
+
+    if df_sel.empty:
+        st.warning("該当する銘柄が見つかりません。")
+        return
+
+    options = df_sel.apply(
         lambda r: f"{r['code']}  {r['company_name']}  ({r['sector33_name']})", axis=1
     ).tolist()
     selected = st.selectbox("銘柄を選択", options, key="chart_sel")
     sel_code = selected.split()[0].strip()
 
     stock = df_screening[df_screening["code"] == sel_code].iloc[0]
+    market_phase = str(stock.get("market_phase", ""))
+
+    # ── 買い時・売り時判定パネル ──
+    st.divider()
+    _buy_sell_panel(stock, market_phase)
+    st.divider()
 
     # 銘柄情報カード
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("終値", f"¥{stock['latest_close']:,.0f}")
-    c2.metric("窪田スコア", f"{stock['kubota_trade_score']}/10")
-    c3.metric("成長株スコア", f"{stock['growth_invest_score']}/29")
+    c1.metric("現在値", f"¥{stock['latest_close']:,.0f}", help="直近取引日の終値")
+    c2.metric("窪田スコア", f"{stock['kubota_trade_score']}/10", help="7点以上が買いの目安")
+    c3.metric("成長株スコア", f"{stock['growth_invest_score']}/29", help="15点以上が優良成長株の目安")
     c4.metric("PER", f"{stock['per']:.1f}x" if pd.notna(stock['per']) else "N/A")
     c5.metric(
         "シグナル",
@@ -945,6 +1150,23 @@ def main():
         help="窪田フレームワーク × 成長株分析 | FIRE目標 ¥1億円"
     )
 
+    with st.expander("🗺️ このダッシュボードの使い方（初めての方はここから）", expanded=False):
+        st.markdown("""
+**このダッシュボードでできること**
+- 東証プライム全銘柄を毎日自動でスクリーニングし、買い時の銘柄を絞り込む
+- 窪田剛「銘柄選びの教科書」の3条件（流動性・ボラティリティ・チャートパターン）をAIが自動判定
+- 成長株の財務指標（売上成長率・ROE・ROICなど）を一覧で確認できる
+
+**推奨の使い方フロー**
+1. **相場フェーズを確認**（上部バナー） → BULL（強気）の時期だけ積極的に買いを検討
+2. **「エントリーシグナル」タブ**で今すぐ検討できる銘柄を確認
+3. **「銘柄詳細・売買判定」タブ**で気になる銘柄を検索 → チェックリストで条件を確認
+4. 条件が揃っていたら実際の株価チャートで最終確認してエントリー判断
+
+**投資の注意事項** このシステムはあくまで投資の参考情報です。最終的な投資判断は自己責任でお願いします。
+        """)
+
+
     # データ読み込み（失敗時は空 DataFrame）
     with st.spinner("BigQuery からデータを取得中..."):
         try:
@@ -971,11 +1193,11 @@ def main():
 
     # タブ
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🔍 スクリーニング",
-        "🚀 エントリーシグナル",
-        "📊 株価チャート",
-        "📉 バックテスト",
-        "📈 TOPIX推移",
+        "🔍 銘柄スクリーニング",
+        "🚀 買いシグナル銘柄",
+        "📌 銘柄詳細・売買判定",
+        "📉 過去シグナル検証",
+        "📈 相場全体（TOPIX）",
     ])
 
     with tab1:
