@@ -100,7 +100,7 @@ def get_bq_client() -> bigquery.Client:
       2. GOOGLE_APPLICATION_CREDENTIALS 環境変数が指すキーファイル
       3. Application Default Credentials (Cloud Run / GitHub Actions / gcloud auth)
     """
-    scopes = ["https://www.googleapis.com/auth/bigquery.readonly"]
+    scopes = ["https://www.googleapis.com/auth/bigquery"]
 
     # ① Streamlit Cloud secrets 対応（secrets.toml が存在しない場合は無視）
     try:
@@ -146,7 +146,7 @@ def load_market_env() -> pd.DataFrame:
 def load_screening() -> pd.DataFrame:
     return _bq("""
         SELECT
-          code, company_name, sector33_name,
+          code, company_name, sector_33_code_name AS sector33_name,
           latest_close, avg_turnover_20d_oku, liquidity_grade,
           volatility_score, chart_score, kubota_trade_score,
           sales_cagr_3y_pct, op_cagr_3y_pct, roe_pct, roic_pct,
