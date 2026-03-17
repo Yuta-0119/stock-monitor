@@ -197,7 +197,7 @@ def load_screening() -> pd.DataFrame:
           market_phase, kubota_signal, screening_status,
           next_earnings_date, days_to_earnings,
           atr_pct, ma200_trend, price_vs_ma200, consolidation, volume_surge, volume_ratio,
-          hv_contraction
+          hv_contraction, price_strength_score
         FROM `onitsuka-app.analytics.integrated_score`
         WHERE screening_status = 'ACTIVE'
         ORDER BY kubota_trade_score DESC, growth_invest_score DESC
@@ -242,32 +242,30 @@ def load_price_history(code: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL)
 def load_holdings() -> pd.DataFrame:
-    """保有銘柄をBQから取得し、最新株価・シグナルと結合"""
+    """保有銘柄をBQから取得（holdings_summary ビュー使用）"""
     return _bq("""
         SELECT
-          h.code,
-          h.company_name,
-          h.product_type,
-          h.account_type,
-          h.shares,
-          h.purchase_price,
-          h.purchase_date,
-          h.purchase_amount,
-          h.tx_count,
-          s.latest_close,
-          s.kubota_signal,
-          s.kubota_trade_score,
-          s.growth_invest_score,
-          s.atr_pct,
-          s.days_to_earnings,
-          s.next_earnings_date,
-          s.market_phase,
-          -- 損益計算
-          ROUND((s.latest_close - h.purchase_price) / h.purchase_price * 100, 2) AS return_pct,
-          ROUND((s.latest_close - h.purchase_price) * h.shares, 0) AS unrealized_pnl,
-          ROUND(s.latest_close * h.shares, 0) AS current_value
-        FROM `onitsuka-app.analytics.holdings` h
-        LEFT JOIN `onitsuka-app.analytics.integrated_score` s ON h.code = s.code
+          product_category,
+          company_name,
+          code,
+          account,
+          total_shares    AS shares,
+          avg_cost_per_share AS purchase_price,
+          total_cost      AS purchase_amount,
+          first_buy_date,
+          last_buy_date,
+          latest_close,
+          kubota_signal,
+          kubota_trade_score,
+          growth_invest_score,
+          next_earnings_date,
+          days_to_earnings,
+          price_strength_score,
+          current_value,
+          unrealized_pnl,
+          return_pct
+        FROM `onitsuka-app.analytics.holdings_summary`
+        ORDER BY product_category, code
     """)
 
 
@@ -592,16 +590,15 @@ def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
 
 def _holding_action(row) -> str:
     """保有銘柄ごとのアクション提案を返す"""
-    return_pct = _safe_num(row.get("return_pct"))
+    return_pct       = _safe_num(row.get("return_pct"))
     days_to_earnings = _safe_num(row.get("days_to_earnings"))
-    market_phase = str(row.get("market_phase", ""))
-    kubota_signal = str(row.get("kubota_signal", ""))
+    kubota_signal    = str(row.get("kubota_signal", ""))
 
     if return_pct is not None and return_pct < -8:
         return "🛑 損切り検討"
     if days_to_earnings is not None and days_to_earnings <= 14:
         return "⚠️ 決算前注意"
-    if return_pct is not None and return_pct >= 20 and market_phase != "BULL":
+    if return_pct is not None and return_pct >= 20:
         return "💰 利確検討"
     if kubota_signal == "ENTRY SIGNAL":
         return "✅ 保有継続"
@@ -619,15 +616,16 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     # ─── None値の補完（米国株・投資信託はJ-Quants対象外）───
     def _fill_non_jp(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        non_jp_mask = ~df.get("product_type", pd.Series(["国内株式"] * len(df))).str.contains("国内株式", na=False)
+        cat_col = "product_category"
+        non_jp_mask = ~df.get(cat_col, pd.Series(["国内株式"] * len(df))).str.contains("国内", na=False)
         if "kubota_signal" in df.columns:
             df.loc[non_jp_mask, "kubota_signal"] = "ー（対象外）"
         return df
     df_holdings = _fill_non_jp(df_holdings)
 
-    # 国内株式のみで損益集計
-    df_jp = df_holdings[df_holdings["product_type"].str.contains("国内株式", na=False)] \
-        if "product_type" in df_holdings.columns else df_holdings
+    # 国内株式のみで損益集計（current_value が NaN でない行）
+    df_jp = df_holdings[df_holdings["current_value"].notna()] \
+        if "current_value" in df_holdings.columns else df_holdings
 
     # ─── ポートフォリオサマリー ───
     st.markdown("### ポートフォリオサマリー")
@@ -684,7 +682,8 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     TABLE_COLS = {
         "code": "コード",
         "company_name": "会社名",
-        "product_type": "商品",
+        "product_category": "商品",
+        "account": "口座",
         "shares": "保有株数",
         "purchase_price": "取得単価",
         "latest_close": "現在値",
@@ -742,8 +741,9 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     # ─── 銘柄別チャート（国内株式のみ） ───
     st.markdown("### 銘柄別チャート")
     domestic = df_holdings[
-        df_holdings["product_type"].str.contains("国内株式", na=False)
+        df_holdings.get("product_category", pd.Series(dtype=str)).str.contains("国内", na=False)
         & df_holdings["code"].notna()
+        & (df_holdings["code"] != "")
     ]
     if domestic.empty:
         st.info("国内株式の保有銘柄がありません。")
