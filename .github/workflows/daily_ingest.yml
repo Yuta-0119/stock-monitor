@@ -52,7 +52,11 @@ jobs:
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode analytics
 
-      - name: Step 3 – Google Sheets エクスポート
+      - name: Step 3 – 保有銘柄 BigQuery 同期
+        if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        run: python scripts/load_holdings.py
+
+      - name: Step 4 – Google Sheets エクスポート
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode export
 

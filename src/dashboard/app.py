@@ -241,6 +241,37 @@ def load_price_history(code: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=CACHE_TTL)
+def load_holdings() -> pd.DataFrame:
+    """保有銘柄をBQから取得し、最新株価・シグナルと結合"""
+    return _bq("""
+        SELECT
+          h.code,
+          h.company_name,
+          h.product_type,
+          h.account_type,
+          h.shares,
+          h.purchase_price,
+          h.purchase_date,
+          h.purchase_amount,
+          h.tx_count,
+          s.latest_close,
+          s.kubota_signal,
+          s.kubota_trade_score,
+          s.growth_invest_score,
+          s.atr_pct,
+          s.days_to_earnings,
+          s.next_earnings_date,
+          s.market_phase,
+          -- 損益計算
+          ROUND((s.latest_close - h.purchase_price) / h.purchase_price * 100, 2) AS return_pct,
+          ROUND((s.latest_close - h.purchase_price) * h.shares, 0) AS unrealized_pnl,
+          ROUND(s.latest_close * h.shares, 0) AS current_value
+        FROM `onitsuka-app.analytics.holdings` h
+        LEFT JOIN `onitsuka-app.analytics.integrated_score` s ON h.code = s.code
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL)
 def load_score_history(code: str) -> pd.DataFrame:
     try:
         return _bq(f"""
@@ -552,6 +583,205 @@ def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
             f'<div style="background:#313244;border-radius:6px;height:10px;">'
             f'<div style="width:{bar_g}%;height:100%;border-radius:6px;background:#74c7ec;"></div></div>',
             unsafe_allow_html=True,
+        )
+
+
+# ─────────────────────────────────────────
+# 保有銘柄タブ
+# ─────────────────────────────────────────
+
+def _holding_action(row) -> str:
+    """保有銘柄ごとのアクション提案を返す"""
+    return_pct = _safe_num(row.get("return_pct"))
+    days_to_earnings = _safe_num(row.get("days_to_earnings"))
+    market_phase = str(row.get("market_phase", ""))
+    kubota_signal = str(row.get("kubota_signal", ""))
+
+    if return_pct is not None and return_pct < -8:
+        return "🛑 損切り検討"
+    if days_to_earnings is not None and days_to_earnings <= 14:
+        return "⚠️ 決算前注意"
+    if return_pct is not None and return_pct >= 20 and market_phase != "BULL":
+        return "💰 利確検討"
+    if kubota_signal == "ENTRY SIGNAL":
+        return "✅ 保有継続"
+    return "📊 様子見"
+
+
+def render_tab_holdings(df_holdings: pd.DataFrame):
+    """Tab 0: 💼 保有銘柄管理"""
+    st.subheader("💼 保有銘柄管理")
+
+    if df_holdings.empty:
+        st.info("保有銘柄データがありません。スプレッドシートの「保有銘柄」タブにデータを入力してください。")
+        return
+
+    # ─── ポートフォリオサマリー ───
+    st.markdown("### ポートフォリオサマリー")
+
+    total_value = df_holdings["current_value"].sum() if "current_value" in df_holdings.columns else 0
+    total_pnl = df_holdings["unrealized_pnl"].sum() if "unrealized_pnl" in df_holdings.columns else 0
+    total_cost = df_holdings["purchase_amount"].sum() if "purchase_amount" in df_holdings.columns else 0
+    avg_return = (
+        df_holdings["return_pct"].mean()
+        if "return_pct" in df_holdings.columns and df_holdings["return_pct"].notna().any()
+        else None
+    )
+    holding_count = len(df_holdings)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        val_disp = f"¥{int(total_value):,}" if total_value else "N/A"
+        st.metric("評価総額", val_disp, help="現在値 × 保有株数の合計（株式のみ）")
+    with c2:
+        pnl_disp = f"¥{int(total_pnl):,}" if total_pnl else "N/A"
+        delta_str = f"{'+' if total_pnl >= 0 else ''}{int(total_pnl):,}円" if total_pnl else None
+        st.metric(
+            "含み損益",
+            pnl_disp,
+            delta=delta_str,
+            delta_color="normal" if total_pnl >= 0 else "inverse",
+        )
+    with c3:
+        avg_ret_disp = f"{avg_return:+.2f}%" if avg_return is not None else "N/A"
+        st.metric("平均リターン", avg_ret_disp, help="国内・米国株式の平均含み損益率")
+    with c4:
+        st.metric("保有銘柄数", f"{holding_count} 件")
+
+    st.divider()
+
+    # ─── アクション提案テーブル ───
+    st.markdown("### アクション提案")
+    df_h = df_holdings.copy()
+    df_h["アクション"] = df_h.apply(_holding_action, axis=1)
+
+    # アクション集計
+    action_counts = df_h["アクション"].value_counts()
+    action_cols = st.columns(min(len(action_counts), 5))
+    for i, (action, cnt) in enumerate(action_counts.items()):
+        if i < len(action_cols):
+            action_cols[i].metric(action, f"{cnt} 件")
+
+    st.divider()
+
+    # ─── 保有銘柄テーブル ───
+    st.markdown("### 保有銘柄一覧")
+
+    TABLE_COLS = {
+        "code": "コード",
+        "company_name": "会社名",
+        "product_type": "商品",
+        "shares": "保有株数",
+        "purchase_price": "取得単価",
+        "latest_close": "現在値",
+        "return_pct": "損益%",
+        "unrealized_pnl": "含み損益(円)",
+        "current_value": "評価額",
+        "kubota_signal": "シグナル",
+        "days_to_earnings": "決算(日)",
+        "アクション": "アクション",
+    }
+
+    avail = [c for c in TABLE_COLS if c in df_h.columns or c == "アクション"]
+    df_table = df_h[avail].rename(columns=TABLE_COLS)
+
+    def _style_holdings(df: pd.DataFrame) -> pd.DataFrame:
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        if "損益%" in df.columns:
+            for idx, val in df["損益%"].items():
+                v = _safe_num(val)
+                if v is not None and v > 0:
+                    styles.loc[idx, :] = "background-color: rgba(166,227,161,0.12)"
+                elif v is not None and v < -5:
+                    styles.loc[idx, :] = "background-color: rgba(243,139,168,0.15)"
+        if "シグナル" in df.columns:
+            styles["シグナル"] = df["シグナル"].apply(
+                lambda v: "background-color:#a6e3a1;font-weight:700;color:#1e1e2e"
+                if v == "ENTRY SIGNAL"
+                else ("background-color:#f9e2af;color:#1e1e2e" if "WATCH" in str(v) else "")
+            )
+        return styles
+
+    col_config = {}
+    if "取得単価" in df_table.columns:
+        col_config["取得単価"] = st.column_config.NumberColumn("取得単価", format="¥%,.0f")
+    if "現在値" in df_table.columns:
+        col_config["現在値"] = st.column_config.NumberColumn("現在値", format="¥%,.0f")
+    if "損益%" in df_table.columns:
+        col_config["損益%"] = st.column_config.NumberColumn("損益%", format="%.2f")
+    if "含み損益(円)" in df_table.columns:
+        col_config["含み損益(円)"] = st.column_config.NumberColumn("含み損益(円)", format="¥%,.0f")
+    if "評価額" in df_table.columns:
+        col_config["評価額"] = st.column_config.NumberColumn("評価額", format="¥%,.0f")
+
+    st.dataframe(
+        df_table.style.apply(_style_holdings, axis=None),
+        use_container_width=True,
+        height=min(600, (len(df_table) + 3) * 38),
+        column_config=col_config,
+    )
+
+    st.divider()
+
+    # ─── 銘柄別チャート（国内株式のみ） ───
+    st.markdown("### 銘柄別チャート")
+    domestic = df_holdings[
+        df_holdings["product_type"].str.contains("国内株式", na=False)
+        & df_holdings["code"].notna()
+    ]
+    if domestic.empty:
+        st.info("国内株式の保有銘柄がありません。")
+    else:
+        chart_options = domestic.apply(
+            lambda r: f"{r['code']}  {r['company_name']}", axis=1
+        ).tolist()
+        selected_stock = st.selectbox("銘柄を選択", chart_options, key="holdings_chart_sel")
+        sel_code = selected_stock.split()[0].strip()
+
+        with st.spinner("株価データ読込中..."):
+            try:
+                df_price = load_price_history(sel_code)
+            except Exception as e:
+                st.error(f"株価データ取得失敗: {e}")
+                df_price = pd.DataFrame()
+
+        if not df_price.empty:
+            df_price["date"] = pd.to_datetime(df_price["date"])
+            df_price = df_price.sort_values("date")
+
+            # 取得単価ラインを追加
+            holding_row = domestic[domestic["code"] == sel_code]
+            purchase_px = None
+            if not holding_row.empty:
+                purchase_px = _safe_num(holding_row.iloc[0].get("purchase_price"))
+
+            fig = _candlestick_fig(
+                df_price.tail(180),
+                title=f"{sel_code}  {selected_stock.split(None, 1)[1] if ' ' in selected_stock else ''}",
+                show_ma=True,
+            )
+
+            # 取得単価の水平線
+            if purchase_px is not None:
+                fig.add_hline(
+                    y=purchase_px,
+                    line_dash="dash",
+                    line_color="#fab387",
+                    annotation_text=f"取得単価 ¥{purchase_px:,.0f}",
+                    annotation_position="top left",
+                    row=1, col=1,
+                )
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("株価データがありません。")
+
+    # ─── 更新方法案内 ───
+    with st.expander("📋 保有銘柄データ更新方法"):
+        st.info(
+            "スプレッドシートの「保有銘柄」タブを更新後、GitHub Actions を手動実行するか、"
+            "以下のコマンドをローカルで実行してください:\n\n"
+            "`.venv\\Scripts\\python scripts/load_holdings.py`"
         )
 
 
@@ -1309,13 +1539,22 @@ def main():
     st.divider()
 
     # タブ
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "💼 保有銘柄管理",
         "🏆 今日の注目銘柄",
         "🔍 銘柄詳細・売買判定",
         "📊 全銘柄スクリーニング",
         "📉 過去シグナル実績",
         "🌏 相場環境（TOPIX）",
     ])
+
+    with tab0:
+        try:
+            df_holdings = load_holdings()
+        except Exception as e:
+            st.error(f"保有銘柄データ取得エラー: {e}")
+            df_holdings = pd.DataFrame()
+        render_tab_holdings(df_holdings)
 
     with tab1:
         market_phase = str(df_env.iloc[0].get("market_phase", "")) if not df_env.empty else ""
