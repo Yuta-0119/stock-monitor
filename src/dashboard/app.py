@@ -634,13 +634,13 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         return df
     df_holdings = _fill_non_jp(df_holdings)
 
-    # 国内株式のみで損益集計（current_value が NaN でない行）
+    # 評価額が取得できた全銘柄で損益集計（国内株・米国株・投資信託すべて対象）
     df_jp = df_holdings[df_holdings["current_value"].notna()] \
         if "current_value" in df_holdings.columns else df_holdings
 
     # ─── ポートフォリオサマリー ───
     st.markdown("### ポートフォリオサマリー")
-    st.caption("※ 評価額・損益は国内株式のみ集計。米国株・投資信託は J-Quants API 対象外のため現在値データなし。")
+    st.caption("※ 評価額・損益は国内株・米国株・投資信託を合算。投資信託は ETF プロキシ方式による推定値（±2% 誤差）。")
 
     total_value = df_jp["current_value"].sum() if "current_value" in df_jp.columns else 0
     total_pnl   = df_jp["unrealized_pnl"].sum() if "unrealized_pnl" in df_jp.columns else 0
@@ -655,7 +655,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         val_disp = f"¥{int(total_value):,}" if pd.notna(total_value) and total_value != 0 else "N/A"
-        st.metric("評価総額", val_disp, help="現在値 × 保有株数の合計（国内株式のみ）")
+        st.metric("評価総額", val_disp, help="国内株・米国株・投資信託すべての評価額合計")
     with c2:
         pnl_notna = pd.notna(total_pnl)
         pnl_disp  = f"¥{int(total_pnl):,}" if pnl_notna else "N/A"
@@ -668,7 +668,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         )
     with c3:
         avg_ret_disp = f"{avg_return:+.2f}%" if avg_return is not None else "N/A"
-        st.metric("平均リターン", avg_ret_disp, help="国内株式の平均含み損益率")
+        st.metric("平均リターン", avg_ret_disp, help="評価額がある全保有銘柄の平均含み損益率")
     with c4:
         st.metric("保有銘柄数", f"{holding_count} 件")
 
@@ -841,7 +841,7 @@ def render_sidebar(df_screening: pd.DataFrame, current_assets_man: int = 0):
         </div>
         <div class="kpi-label">残り ¥{max(target - current_assets, 0):,}万円</div>
         """, unsafe_allow_html=True)
-        st.caption("※ 国内株式のみ集計。米国株・投信は対象外。")
+        st.caption("※ 投資信託は ETF プロキシ方式による推定値。米国株は yfinance 取得値 × USD/JPY 換算。")
 
         st.divider()
 

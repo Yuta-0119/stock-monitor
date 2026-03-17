@@ -7,8 +7,9 @@
 --   米国株  → external_prices.price_jpy（yfinance USD → JPY 換算）
 --   投資信託 → external_prices.price_jpy（yfinance 基準価額 JPY）
 --
--- 通貨の扱い:
---   国内株・投資信託の purchase_amount は JPY
+-- 通貨・単位の扱い:
+--   国内株の purchase_amount は JPY（円/株）
+--   投資信託の purchase_amount は shares(口) × unit_price(円/万口) で格納（実円 = ÷10,000 が必要）
 --   米国株の purchase_amount は USD → 現在の USDJPY で近似換算
 CREATE OR REPLACE VIEW `onitsuka-app.analytics.holdings_summary` AS
 WITH
@@ -37,18 +38,25 @@ agg AS (
   GROUP BY product_category, company_name, code, account
 ),
 
--- ─── 取得金額を JPY 統一（米国株のみ USDJPY 換算）──────────
+-- ─── 取得金額を JPY 統一（米国株: USDJPY 換算 / 投資信託: /10000 補正）──────────
+-- 投資信託の purchase_amount は shares(口) × unit_price(円/万口) で格納されているため
+-- 実際の円建て金額に変換するには 10,000 で除算する必要がある。
+-- avg_cost_orig は SUM(purchase_amount)/SUM(shares) = 円/万口 スケール（= ETF proxy NAV と同単位）
 agg_jpy AS (
   SELECT
     a.*,
     CASE
       WHEN a.product_category = '米国株'
-      THEN ROUND(a.total_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
+        THEN ROUND(a.total_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
+      WHEN a.product_category = '投資信託'
+        THEN ROUND(a.total_cost_orig / 10000.0, 0)  -- 円/万口 → 実円換算
       ELSE a.total_cost_orig
     END AS total_cost,
     CASE
       WHEN a.product_category = '米国株'
-      THEN ROUND(a.avg_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
+        THEN ROUND(a.avg_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
+      WHEN a.product_category = '投資信託'
+        THEN ROUND(a.avg_cost_orig / 10000.0, 4)  -- 円/万口 → 円/口
       ELSE a.avg_cost_orig
     END AS avg_cost_per_share,
     fx.usdjpy_rate
@@ -79,34 +87,42 @@ SELECT
   sc.price_strength_score,
 
   -- ★ 評価額（円）
+  -- 投資信託: price_jpy は ETF proxy NAV（円/万口）のため shares(口) × price ÷ 10,000 で実円換算
+  -- 米国株・国内株: price_jpy は 円/株 そのまま
   CASE
-    WHEN COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy) IS NOT NULL
-    THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy), 0)
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
+      THEN ROUND(aj.total_shares * ep_fund.price_jpy / 10000.0, 0)
+    WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
+      THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy), 0)
     ELSE NULL
   END AS current_value,
 
   -- ★ 含み損益（円）
   CASE
-    WHEN COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy) IS NOT NULL
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
       AND aj.total_cost IS NOT NULL
-    THEN ROUND(
-      aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy)
-      - aj.total_cost, 0
-    )
+      THEN ROUND(aj.total_shares * ep_fund.price_jpy / 10000.0 - aj.total_cost, 0)
+    WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
+      AND aj.total_cost IS NOT NULL
+      THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy) - aj.total_cost, 0)
     ELSE NULL
   END AS unrealized_pnl,
 
   -- ★ 損益率（%）
   CASE
-    WHEN COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy) IS NOT NULL
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
       AND aj.total_cost > 0
-    THEN ROUND(
-      SAFE_DIVIDE(
-        aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy, ep_fund.price_jpy)
-        - aj.total_cost,
-        aj.total_cost
-      ) * 100, 2
-    )
+      THEN ROUND(
+        SAFE_DIVIDE(aj.total_shares * ep_fund.price_jpy / 10000.0 - aj.total_cost, aj.total_cost) * 100, 2
+      )
+    WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
+      AND aj.total_cost > 0
+      THEN ROUND(
+        SAFE_DIVIDE(
+          aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy) - aj.total_cost,
+          aj.total_cost
+        ) * 100, 2
+      )
     ELSE NULL
   END AS return_pct
 
