@@ -194,7 +194,7 @@ def load_screening() -> pd.DataFrame:
           sales_cagr_3y_pct, op_cagr_3y_pct, roe_pct, roic_pct,
           growth_invest_score,
           per, pbr,
-          market_phase, kubota_signal, screening_status,
+          market_phase, kubota_signal, signal_confidence, screening_status,
           next_earnings_date, days_to_earnings,
           atr_pct, ma200_trend, price_vs_ma200, consolidation, volume_surge, volume_ratio,
           hv_contraction, price_strength_score
@@ -325,8 +325,8 @@ def _style_screening(df: pd.DataFrame) -> pd.DataFrame:
         )
     if "シグナル" in df.columns:
         styles["シグナル"] = df["シグナル"].apply(
-            lambda v: "background-color:#a6e3a1;font-weight:700;color:#1e1e2e" if v == "ENTRY SIGNAL"
-            else ("background-color:#f9e2af;color:#1e1e2e" if "WATCH" in str(v) else "")
+            lambda v: "background-color:#a6e3a1;font-weight:700;color:#1e1e2e" if v == "買いシグナル"
+            else ("background-color:#f9e2af;color:#1e1e2e" if "放れ待ち" in str(v) else "")
         )
     if "決算(日)" in df.columns:
         styles["決算(日)"] = df["決算(日)"].apply(
@@ -405,8 +405,8 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
 GLOSSARY = {
     "窪田スコア（0〜10点）": "「銘柄選びの教科書」著者・窪田剛氏のフレームワークに基づくトレード適性スコア。ボラティリティ（値動きの激しさ）とチャートの形状から算出。10点に近いほどトレードチャンス。",
     "成長株スコア（0〜29点）": "売上・利益の成長率（CAGR）、ROE（自己資本利益率）、ROIC（投下資本利益率）、PER・PBRのバリュエーションを総合したスコア。29点に近いほど優良成長株。",
-    "ENTRY SIGNAL（今すぐ買いを検討）": "5つの条件（相場上昇・ATR≥1.5%・HV収縮・レンジ収縮・出来高急増）がすべて揃った銘柄。積極的なエントリーを検討できる状態。",
-    "WATCH（放れ待ち）": "コンソリデーション（株価が一定レンジに収まった煮詰まり状態）に入っている銘柄。ブレイクアウト（価格が放れるタイミング）を待つ状態。",
+    "買いシグナル（今すぐ買いを検討）": "5つの条件（相場上昇・ATR≥1.5%・HV収縮・レンジ収縮・出来高急増）がすべて揃った銘柄。積極的なエントリーを検討できる状態。",
+    "放れ待ち": "コンソリデーション（株価が一定レンジに収まった煮詰まり状態）に入っている銘柄。ブレイクアウト（価格が放れるタイミング）を待つ状態。",
     "ATR（平均真値幅）": "過去14日間の平均的な1日の値動き幅。ATR%が1.5%以上あると「十分な値動き」と判定。小さすぎると利益が取りにくい。",
     "HV収縮（ボラティリティ収縮）": "過去20日のボラティリティ（HV20）が過去60日（HV60）より小さい状態。株価が静まり返っている時期で、ブレイクアウト前の特徴。",
     "MA200（200日移動平均線）": "過去200営業日の終値の平均値。長期トレンドの目安。株価がMA200の上方にあり、MA200が右肩上がりであれば長期上昇トレンド。",
@@ -439,16 +439,16 @@ def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
     days_to_earn = _safe_num(stock.get("days_to_earnings"))
 
     # ── a) LARGE VERDICT BANNER ──
-    if signal == "ENTRY SIGNAL":
+    if signal == "買いシグナル":
         st.markdown("""
         <div class="verdict-buy">
-            🟢 ENTRY SIGNAL<br>
+            🟢 買いシグナル<br>
             <span style="font-size:.75em;font-weight:400;">今すぐ買いを検討できます</span>
         </div>""", unsafe_allow_html=True)
     elif "WATCH" in signal:
         st.markdown("""
         <div class="verdict-watch">
-            🟡 WATCH<br>
+            🟡 放れ待ち<br>
             <span style="font-size:.75em;font-weight:400;">放れ待ち — もう少し様子を見ましょう</span>
         </div>""", unsafe_allow_html=True)
     else:
@@ -475,7 +475,7 @@ def _buy_sell_panel(stock: pd.Series, market_phase: str = ""):
     stop_loss = None
     target = None
     atr_val = None
-    if signal == "ENTRY SIGNAL" and close is not None and atr_pct_val is not None:
+    if signal == "買いシグナル" and close is not None and atr_pct_val is not None:
         atr_val = close * (atr_pct_val / 100)
         stop_loss = round(close - 2 * atr_val)
         target = round(close + 3 * atr_val)
@@ -603,7 +603,7 @@ def _holding_action(row) -> str:
         return "⚠️ 決算前注意"
     if return_pct is not None and return_pct >= 20:
         return "💰 利確検討"
-    if kubota_signal == "ENTRY SIGNAL":
+    if kubota_signal == "買いシグナル":
         return "✅ 保有継続"
     return "📊 様子見"
 
@@ -716,8 +716,8 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         if "シグナル" in df.columns:
             styles["シグナル"] = df["シグナル"].apply(
                 lambda v: "background-color:#a6e3a1;font-weight:700;color:#1e1e2e"
-                if v == "ENTRY SIGNAL"
-                else ("background-color:#f9e2af;color:#1e1e2e" if "WATCH" in str(v) else "")
+                if v == "買いシグナル"
+                else ("background-color:#f9e2af;color:#1e1e2e" if "放れ待ち" in str(v) else "")
             )
         return styles
 
@@ -851,9 +851,9 @@ def render_sidebar(df_screening: pd.DataFrame, current_assets_man: int = 0):
             help="チャート・ボラティリティのスコア。7以上に絞ると有望銘柄のみ表示。")
         min_growth = st.slider("成長株スコア（最低）", 0, 29, 0,
             help="売上成長・ROE・PERなどのスコア。15以上に絞ると優良成長株のみ表示。")
-        sig_opts = ["すべて", "ENTRY SIGNAL", "WATCH（放れ待ち）"]
+        sig_opts = ["すべて", "買いシグナル", "放れ待ち"]
         sel_signal = st.selectbox("シグナル", sig_opts,
-            help="「ENTRY SIGNAL」＝今すぐ買い検討できる銘柄。「WATCH」＝ブレイクアウト待ちの銘柄。")
+            help="「買いシグナル」＝今すぐ買い検討できる銘柄。「放れ待ち」＝ブレイクアウト待ちの銘柄。")
 
         st.divider()
 
@@ -909,7 +909,7 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
     """Tab 1: 今日の注目銘柄（カードレイアウト）"""
     st.subheader("🏆 今日の注目銘柄")
     st.info(
-        "「ENTRY SIGNAL」＝今すぐ買いを検討できる銘柄 / 「WATCH」＝近いうちにチャンスが来る可能性がある銘柄"
+        "「買いシグナル」＝今すぐ買いを検討できる銘柄 / 「放れ待ち」＝近いうちにチャンスが来る可能性がある銘柄"
     )
 
     # 相場フェーズバナー
@@ -924,8 +924,8 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
         st.info("スクリーニングデータがありません。")
         return
 
-    df_entry = df[df["kubota_signal"] == "ENTRY SIGNAL"].copy()
-    df_watch = df[df["kubota_signal"].str.contains("WATCH", na=False)].copy()
+    df_entry = df[df["kubota_signal"] == "買いシグナル"].copy()
+    df_watch = df[df["kubota_signal"].str.contains("放れ待ち", na=False)].copy()
 
     # メトリクス行
     c1, c2, c3 = st.columns(3)
@@ -934,7 +934,7 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
     c3.metric("相場フェーズ", market_phase if market_phase else "N/A")
 
     # ENTRY SIGNAL カード（最大9件、3列グリッド）
-    st.markdown("#### 🟢 ENTRY SIGNAL — 今すぐ買いを検討できる銘柄")
+    st.markdown("#### 🟢 買いシグナル — 今すぐ買いを検討できる銘柄")
     if df_entry.empty:
         st.info("現在 ENTRY SIGNAL 銘柄はありません。")
     else:
@@ -963,7 +963,7 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
                             <div style="background:linear-gradient(135deg,#1e3a1e,#2d5a2d);
                                         border:2px solid #a6e3a1;border-radius:12px;padding:14px;
                                         margin-bottom:8px;">
-                              <div style="font-size:1.1em;font-weight:700;color:#a6e3a1;">🟢 ENTRY SIGNAL</div>
+                              <div style="font-size:1.1em;font-weight:700;color:#a6e3a1;">🟢 買いシグナル</div>
                               <div style="font-size:1.3em;font-weight:700;color:#cdd6f4;margin:4px 0;">
                                 {row.get('code', '')} {row.get('company_name', '')}</div>
                               <div style="color:#a6adc8;font-size:.85em;">{row.get('sector33_name', '')}</div>
@@ -976,15 +976,16 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
                               <div style="font-size:.8em;color:#a6adc8;margin-top:4px;">
                                 窪田スコア {ksc_str}/10
                               </div>
+                              {'<div style="margin-top:6px;"><span style="background:#a6e3a1;color:#1e1e2e;border-radius:4px;padding:2px 7px;font-size:.82em;font-weight:700;">確度 ' + str(int(row["signal_confidence"])) + '%</span></div>' if pd.notna(row.get("signal_confidence")) else ''}
                             </div>
                             """, unsafe_allow_html=True)
                     except Exception:
                         pass
 
     # WATCH テーブル
-    st.markdown("#### 🟡 WATCH（放れ待ち）— 近いうちにチャンスが来る可能性がある銘柄")
+    st.markdown("#### 🟡 放れ待ち — 近いうちにチャンスが来る可能性がある銘柄")
     if df_watch.empty:
-        st.info("現在 WATCH 銘柄はありません。")
+        st.info("現在 放れ待ち 銘柄はありません。")
     else:
         WATCH_COLS = {
             "code": "コード",
@@ -993,6 +994,7 @@ def render_tab_candidates(df: pd.DataFrame, market_phase: str = ""):
             "latest_close": "終値",
             "kubota_trade_score": "窪田S",
             "growth_invest_score": "成長株S",
+            "signal_confidence": "確度(%)",
             "days_to_earnings": "決算(日)",
         }
         avail = [c for c in WATCH_COLS if c in df_watch.columns]
@@ -1008,7 +1010,7 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
 
     st.info(
         "**見方のポイント**　"
-        "🟢 シグナル列が「ENTRY SIGNAL」の銘柄は買いの5条件が揃っています。"
+        "🟢 シグナル列が「買いシグナル」の銘柄は買いの5条件が揃っています。"
         "「窪田S」は7点以上、「成長株S」は15点以上を目安に絞り込むと有望銘柄に絞れます。"
         "「決算(日)」が赤い銘柄は決算発表が近く値動きが荒れやすいため注意してください。",
         icon="💡",
@@ -1029,8 +1031,8 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
     # サマリー指標
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("表示銘柄数", f"{len(df_f)} 件")
-    c2.metric("ENTRY SIGNAL", f"{(df_f['kubota_signal'] == 'ENTRY SIGNAL').sum()} 件")
-    c3.metric("WATCH", f"{df_f['kubota_signal'].str.contains('WATCH', na=False).sum()} 件")
+    c2.metric("買いシグナル", f"{(df_f['kubota_signal'] == '買いシグナル').sum()} 件")
+    c3.metric("放れ待ち", f"{df_f['kubota_signal'].str.contains('放れ待ち', na=False).sum()} 件")
     c4.metric(
         "平均窪田スコア",
         f"{df_f['kubota_trade_score'].mean():.1f}" if not df_f.empty else "N/A"
@@ -1079,7 +1081,7 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
                 銘柄数=("code", "count"),
                 avg_kubota=("kubota_trade_score", "mean"),
                 avg_growth=("growth_invest_score", "mean"),
-                entry_cnt=("kubota_signal", lambda x: (x == "ENTRY SIGNAL").sum()),
+                entry_cnt=("kubota_signal", lambda x: (x == "買いシグナル").sum()),
             )
             .reset_index()
             .sort_values("avg_kubota", ascending=True)
@@ -1128,7 +1130,7 @@ def render_tab_chart(df_screening: pd.DataFrame):
             placeholder="コードまたは会社名を入力してください",
         )
     with col_priority:
-        priority_entry = st.checkbox("🟢 ENTRY SIGNAL銘柄を優先表示", value=False, key="chart_priority")
+        priority_entry = st.checkbox("🟢 買いシグナル銘柄を優先表示", value=False, key="chart_priority")
 
     if search:
         mask = (
@@ -1141,8 +1143,8 @@ def render_tab_chart(df_screening: pd.DataFrame):
 
     # ENTRY SIGNAL 優先表示
     if priority_entry:
-        df_entry_first = df_sel[df_sel["kubota_signal"] == "ENTRY SIGNAL"]
-        df_rest = df_sel[df_sel["kubota_signal"] != "ENTRY SIGNAL"]
+        df_entry_first = df_sel[df_sel["kubota_signal"] == "買いシグナル"]
+        df_rest = df_sel[df_sel["kubota_signal"] != "買いシグナル"]
         df_sel = pd.concat([df_entry_first, df_rest], ignore_index=True)
 
     if df_sel.empty:
@@ -1184,8 +1186,8 @@ def render_tab_chart(df_screening: pd.DataFrame):
     c4.metric("PER", f"{per_disp:.1f}x" if per_disp is not None else "N/A")
     c5.metric(
         "シグナル",
-        "🟢 ENTRY" if stock.get("kubota_signal") == "ENTRY SIGNAL"
-        else ("🟡 WATCH" if "WATCH" in str(stock.get("kubota_signal", "")) else "➖"),
+        "🟢 買いシグナル" if stock.get("kubota_signal") == "買いシグナル"
+        else ("🟡 放れ待ち" if stock.get("kubota_signal") == "放れ待ち" else "➖"),
     )
     c6.metric(
         "次回決算",

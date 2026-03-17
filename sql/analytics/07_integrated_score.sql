@@ -65,9 +65,9 @@ SELECT
     WHEN liq.liquidity_grade = 'FAIL' THEN 'FAIL_LIQUIDITY'
     ELSE 'ACTIVE'
   END AS screening_status,
-  -- ★ 窪田エントリーシグナル（修正版）
-  -- ENTRY SIGNAL: 放れ+出来高急増が最優先条件。放れ当日は consolidation が崩れるため chart_score は不問
-  -- WATCH: もみ合い形成中（consolidation=TRUE かつ未放れ）
+  -- ★ 窪田エントリーシグナル
+  -- 買いシグナル: 放れ+出来高急増が最優先条件。放れ当日は consolidation が崩れるため chart_score は不問
+  -- 放れ待ち: もみ合い形成中（consolidation=TRUE かつ未放れ）
   CASE
     WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B')
       AND vol.volatility_score >= 3
@@ -75,14 +75,48 @@ SELECT
       AND cht.volume_surge = TRUE
       AND (cht.ma200_trend = 'UP' OR cht.price_vs_ma200 = 'ABOVE')
       AND env.market_phase = 'BULL'
-    THEN 'ENTRY SIGNAL'
+    THEN '買いシグナル'
     WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B', 'PASS_C')
       AND vol.volatility_score >= 2
       AND cht.consolidation = TRUE
       AND cht.breakout = FALSE
-    THEN 'WATCH（放れ待ち）'
+    THEN '放れ待ち'
     ELSE '-'
   END AS kubota_signal,
+
+  -- ★ シグナル確度（0〜100%）
+  -- 買いシグナル: ボラ強度・52週高値・財務・MA200の充足度で加点
+  -- 放れ待ち: レンジ収縮の強さ・ボラ強度・財務で加点
+  CASE
+    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B')
+      AND vol.volatility_score >= 3
+      AND cht.breakout = TRUE
+      AND cht.volume_surge = TRUE
+      AND (cht.ma200_trend = 'UP' OR cht.price_vs_ma200 = 'ABOVE')
+      AND env.market_phase = 'BULL'
+    THEN LEAST(100,
+      50  -- 基礎点
+      + (CASE WHEN vol.volatility_score = 5 THEN 15 WHEN vol.volatility_score = 4 THEN 7 ELSE 0 END)
+      + (CASE WHEN cht.near_52w_high = TRUE THEN 10 ELSE 0 END)
+      + (CASE WHEN fnd.financial_health = 'PASS' THEN 10 ELSE 0 END)
+      + (CASE WHEN cht.ma200_trend = 'UP' AND cht.price_vs_ma200 = 'ABOVE' THEN 10 ELSE 0 END)
+      + (CASE WHEN vol.atr_pct >= 2.0 THEN 5 ELSE 0 END)
+    )
+    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B', 'PASS_C')
+      AND vol.volatility_score >= 2
+      AND cht.consolidation = TRUE
+      AND cht.breakout = FALSE
+    THEN LEAST(100,
+      (CASE WHEN cht.range_contraction < 0.3 THEN 60
+            WHEN cht.range_contraction < 0.4 THEN 50
+            ELSE 40 END)
+      + (CASE WHEN vol.volatility_score = 5 THEN 15 WHEN vol.volatility_score = 4 THEN 7 ELSE 0 END)
+      + (CASE WHEN cht.near_52w_high = TRUE THEN 10 ELSE 0 END)
+      + (CASE WHEN fnd.financial_health = 'PASS' THEN 10 ELSE 0 END)
+    )
+    ELSE NULL
+  END AS signal_confidence,
+
   -- ★ 価格強度スコア（需給代替指標 / 3点満点）
   -- margin_interest APIはStandardプランで利用不可のため株価位置で代替
   (CASE WHEN cht.near_52w_high = TRUE THEN 2 ELSE 0 END)
