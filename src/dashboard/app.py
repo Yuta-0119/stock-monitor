@@ -616,6 +616,19 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         st.info("保有銘柄データがありません。スプレッドシートの「保有銘柄」タブにデータを入力してください。")
         return
 
+    # ─── None値の補完（米国株・投資信託はJ-Quants対象外）───
+    def _fill_non_jp(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        non_jp_mask = ~df.get("product_type", pd.Series(["国内株式"] * len(df))).str.contains("国内株式", na=False)
+        if "kubota_signal" in df.columns:
+            df.loc[non_jp_mask, "kubota_signal"] = "ー（対象外）"
+        return df
+    df_holdings = _fill_non_jp(df_holdings)
+
+    # 国内株式のみで損益集計
+    df_jp = df_holdings[df_holdings["product_type"].str.contains("国内株式", na=False)] \
+        if "product_type" in df_holdings.columns else df_holdings
+
     # ─── ポートフォリオサマリー ───
     st.markdown("### ポートフォリオサマリー")
     st.caption("※ 評価額・損益は国内株式のみ集計。米国株・投資信託は J-Quants API 対象外のため現在値データなし。")
@@ -633,7 +646,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         val_disp = f"¥{int(total_value):,}" if total_value else "N/A"
-        st.metric("評価総額", val_disp, help="現在値 × 保有株数の合計（株式のみ）")
+        st.metric("評価総額", val_disp, help="現在値 × 保有株数の合計（国内株式のみ）")
     with c2:
         pnl_disp = f"¥{int(total_pnl):,}" if total_pnl else "N/A"
         delta_str = f"{'+' if total_pnl >= 0 else ''}{int(total_pnl):,}円" if total_pnl else None
@@ -645,27 +658,11 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         )
     with c3:
         avg_ret_disp = f"{avg_return:+.2f}%" if avg_return is not None else "N/A"
-        st.metric("平均リターン", avg_ret_disp, help="国内・米国株式の平均含み損益率")
+        st.metric("平均リターン", avg_ret_disp, help="国内株式の平均含み損益率")
     with c4:
         st.metric("保有銘柄数", f"{holding_count} 件")
 
     st.divider()
-
-    # ─── None値の補完（米国株・投資信託はJ-Quants対象外）───
-    def _fill_non_jp(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        # product_typeが国内株式以外はシグナル列を「ー（対象外）」で埋める
-        non_jp_mask = ~df.get("product_type", pd.Series(["国内株式"] * len(df))).str.contains("国内株式", na=False)
-        signal_col = "kubota_signal"
-        if signal_col in df.columns:
-            df.loc[non_jp_mask, signal_col] = "ー（対象外）"
-        # 現在値がNullの行の損益関連列も「ー」表示用にNaNのまま残す（column_configで空白表示）
-        return df
-    df_holdings = _fill_non_jp(df_holdings)
-
-    # ─── ポートフォリオサマリー（国内株式のみで計算）───
-    df_jp = df_holdings[df_holdings.get("product_type", pd.Series()).str.contains("国内株式", na=False)] \
-        if "product_type" in df_holdings.columns else df_holdings
 
     # ─── アクション提案テーブル ───
     st.markdown("### アクション提案")
