@@ -804,29 +804,29 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 # ─────────────────────────────────────────
 # サイドバー
 # ─────────────────────────────────────────
-def render_sidebar(df_screening: pd.DataFrame):
+def render_sidebar(df_screening: pd.DataFrame, current_assets_man: int = 0):
     with st.sidebar:
         st.markdown("## 📈 Stock Monitor")
         st.caption("FIRE 目標 ¥1億円 | 窪田フレームワーク")
 
         st.divider()
 
-        # FIRE 進捗（手動入力）
+        # FIRE 進捗（保有銘柄評価額から自動計算）
         st.markdown("### 💰 FIRE 進捗")
-        current_assets = st.number_input(
-            "現在の総資産（万円）", min_value=0, max_value=20000,
-            value=st.session_state.get("fire_assets", 1000),
-            step=50, key="fire_assets"
-        )
-        target = 10000  # 1億円
-        pct = min(current_assets / target * 100, 100)
+        target = 10000  # 1億円（万円単位）
+        current_assets = current_assets_man
+        pct = min(current_assets / target * 100, 100) if target > 0 else 0
+        assets_disp = f"¥{current_assets:,}万円" if current_assets > 0 else "データ取得中..."
         st.markdown(f"""
+        <div class="kpi-label">現在の評価総額</div>
+        <div style="font-size:1.3rem;font-weight:700;color:#cba6f7;margin-bottom:4px">{assets_disp}</div>
         <div class="kpi-label">達成率 {pct:.1f}% （目標 ¥{target:,}万円）</div>
         <div class="fire-track">
           <div class="fire-fill" style="width:{pct}%"></div>
         </div>
         <div class="kpi-label">残り ¥{max(target - current_assets, 0):,}万円</div>
         """, unsafe_allow_html=True)
+        st.caption("※ 国内株式のみ集計。米国株・投信は対象外。")
 
         st.divider()
 
@@ -1547,8 +1547,21 @@ def main():
                          "kubota_signal", "kubota_trade_score", "growth_invest_score"]
             )
 
+        # 保有銘柄は評価額をサイドバーに渡すため先読み
+        try:
+            df_holdings = load_holdings()
+        except Exception:
+            df_holdings = pd.DataFrame()
+
+    # 評価額合計（円→万円）をサイドバー用に計算
+    total_current_value_man = 0
+    if not df_holdings.empty and "current_value" in df_holdings.columns:
+        total_current_value_man = int(df_holdings["current_value"].sum(skipna=True) / 10000)
+
     # サイドバー（フィルター）
-    sel_sector, min_kubota, min_growth, sel_signal = render_sidebar(df_screening)
+    sel_sector, min_kubota, min_growth, sel_signal = render_sidebar(
+        df_screening, total_current_value_man
+    )
 
     # 相場環境バナー
     render_market_header(df_env)
@@ -1565,11 +1578,6 @@ def main():
     ])
 
     with tab0:
-        try:
-            df_holdings = load_holdings()
-        except Exception as e:
-            st.error(f"保有銘柄データ取得エラー: {e}")
-            df_holdings = pd.DataFrame()
         render_tab_holdings(df_holdings)
 
     with tab1:
