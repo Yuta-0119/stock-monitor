@@ -304,11 +304,17 @@ def phase_html(phase: str) -> str:
 
 
 def _score_color(val, max_val: float, hue: int = 120) -> str:
-    """スコアを背景色 hsl に変換"""
+    """スコアを背景色 hsl に変換（テキストは常に暗色で視認性確保）"""
     pct = min(float(val) / max_val, 1.0) if max_val else 0
     sat = int(pct * 65)
-    lig = int(90 - pct * 22)
-    return f"background-color: hsl({hue},{sat}%,{lig}%); font-weight: 700"
+    lig = int(90 - pct * 22)  # 68%〜90%（常に明るい背景）
+    # 背景が明るい(lig>60%)ため文字は常にダーク。スコア0は無色扱い
+    text_color = "#1e1e2e" if sat > 0 else "#6c7086"
+    return (
+        f"background-color: hsl({hue},{sat}%,{lig}%);"
+        f" color: {text_color};"
+        f" font-weight: {'700' if pct >= 0.6 else '400'};"
+    )
 
 
 def _style_screening(df: pd.DataFrame) -> pd.DataFrame:
