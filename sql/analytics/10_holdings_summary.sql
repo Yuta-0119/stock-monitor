@@ -56,7 +56,7 @@ agg_jpy AS (
       WHEN a.product_category = '米国株'
         THEN ROUND(a.avg_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
       WHEN a.product_category = '投資信託'
-        THEN ROUND(a.avg_cost_orig / 10000.0, 4)  -- 円/万口 → 円/口
+        THEN a.avg_cost_orig  -- 円/万口 のまま（latest_close と同単位で比較可能）
       ELSE a.avg_cost_orig
     END AS avg_cost_per_share,
     fx.usdjpy_rate
