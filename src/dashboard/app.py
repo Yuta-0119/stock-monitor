@@ -197,7 +197,7 @@ def load_screening() -> pd.DataFrame:
           market_phase, kubota_signal, screening_status,
           next_earnings_date, days_to_earnings,
           atr_pct, ma200_trend, price_vs_ma200, consolidation, volume_surge, volume_ratio,
-          hv_contraction, hv_20d_pct, hv_60d_pct
+          hv_contraction
         FROM `onitsuka-app.analytics.integrated_score`
         WHERE screening_status = 'ACTIVE'
         ORDER BY kubota_trade_score DESC, growth_invest_score DESC
@@ -209,7 +209,7 @@ def load_screening() -> pd.DataFrame:
 def load_backtest() -> pd.DataFrame:
     return _bq("""
         SELECT
-          signal_date, code, company_name,
+          signal_date, code,
           atr_pct, hv_20d_pct, hv_60d_pct, range_contraction,
           return_5d_pct, return_10d_pct, return_20d_pct,
           win_5d, win_10d, win_20d
@@ -1135,7 +1135,7 @@ def render_tab_backtest(df_bt: pd.DataFrame):
         x=df_bt["signal_date"],
         y=df_bt["return_20d_pct"],
         mode="markers",
-        text=df_bt["company_name"],
+        text=df_bt["code"],
         hovertemplate="<b>%{text}</b><br>シグナル日: %{x|%Y-%m-%d}<br>20日後: %{y:.2f}%<extra></extra>",
         marker=dict(
             color=df_bt["return_20d_pct"],
@@ -1161,13 +1161,12 @@ def render_tab_backtest(df_bt: pd.DataFrame):
     # 詳細テーブル
     with st.expander("📋 バックテスト詳細データ"):
         st.dataframe(
-            df_bt[["signal_date", "code", "company_name",
+            df_bt[["signal_date", "code",
                    "return_5d_pct", "return_10d_pct", "return_20d_pct",
                    "win_5d", "win_10d", "win_20d",
                    "atr_pct", "hv_20d_pct"]].rename(columns={
                 "signal_date": "シグナル日",
                 "code": "コード",
-                "company_name": "会社名",
                 "return_5d_pct": "5日後%",
                 "return_10d_pct": "10日後%",
                 "return_20d_pct": "20日後%",
