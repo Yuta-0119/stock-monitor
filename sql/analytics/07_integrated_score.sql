@@ -24,6 +24,7 @@ SELECT
   cht.volume_ratio,
   cht.volume_surge,
   cht.consolidation,
+  cht.breakout,
   cht.near_52w_high,
   cht.chart_score,
   -- ファンダメンタル
@@ -52,7 +53,7 @@ SELECT
   -- 決算情報
   ern.next_earnings_date,
   ern.days_to_earnings,
-  -- ★ 窪田トレードスコア（ボラ2点 + チャート7点 = 9点満点）
+  -- ★ 窪田トレードスコア（ボラ5点 + チャート5点 = 10点満点）
   IFNULL(vol.volatility_score, 0) + IFNULL(cht.chart_score, 0) AS kubota_trade_score,
   -- ★ 成長株投資スコア（29点満点）
   IFNULL(fnd.sales_cagr_score, 0) + IFNULL(fnd.op_cagr_score, 0)
@@ -64,17 +65,21 @@ SELECT
     WHEN liq.liquidity_grade = 'FAIL' THEN 'FAIL_LIQUIDITY'
     ELSE 'ACTIVE'
   END AS screening_status,
-  -- ★ 窪田エントリーシグナル
+  -- ★ 窪田エントリーシグナル（修正版）
+  -- ENTRY SIGNAL: 放れ+出来高急増が最優先条件。放れ当日は consolidation が崩れるため chart_score は不問
+  -- WATCH: もみ合い形成中（consolidation=TRUE かつ未放れ）
   CASE
     WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B')
       AND vol.volatility_score >= 3
-      AND cht.chart_score >= 6
+      AND cht.breakout = TRUE
       AND cht.volume_surge = TRUE
+      AND (cht.ma200_trend = 'UP' OR cht.price_vs_ma200 = 'ABOVE')
       AND env.market_phase = 'BULL'
     THEN 'ENTRY SIGNAL'
     WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B', 'PASS_C')
       AND vol.volatility_score >= 2
       AND cht.consolidation = TRUE
+      AND cht.breakout = FALSE
     THEN 'WATCH（放れ待ち）'
     ELSE '-'
   END AS kubota_signal,
