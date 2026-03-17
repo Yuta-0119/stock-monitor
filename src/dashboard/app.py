@@ -359,7 +359,7 @@ def _candlestick_fig(
         customdata  = df[["_diff", "_diff_pct"]].values
         diff_line   = (
             f"取得単価: ¥{purchase_px:,.0f}<br>"
-            "差分: ¥%{customdata[0]:+,.0f}　(%{customdata[1]:+.2f}%)"
+            "差分: ¥%{customdata[0]:+,.0f}　(%{customdata[1]:+.1f}%)"
         )
     else:
         customdata = None
@@ -705,7 +705,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
             delta_color="normal" if (pnl_notna and total_pnl >= 0) else "inverse",
         )
     with c3:
-        avg_ret_disp = f"{avg_return:+.2f}%" if avg_return is not None else "N/A"
+        avg_ret_disp = f"{avg_return:+.1f}%" if avg_return is not None else "N/A"
         st.metric("平均リターン", avg_ret_disp, help="評価額がある全保有銘柄の平均含み損益率")
     with c4:
         st.metric("保有銘柄数", f"{holding_count} 件")
@@ -750,7 +750,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 
             v_disp   = f"¥{int(val):,}"                           if val   else "—"
             pnl_disp = f"{pnl_sign}¥{int(abs(pnl)):,}"           if pnl   else "—"
-            ret_disp = f"{ret_sign}{ret:.2f}%"                    if ret is not None else "—"
+            ret_disp = f"{ret_sign}{ret:.1f}%"                     if ret is not None else "—"
 
             st.markdown(f"""
 <div style="
@@ -840,7 +840,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     if "現在値" in df_table.columns:
         col_config["現在値"] = st.column_config.NumberColumn("現在値", format="¥%,.0f")
     if "損益%" in df_table.columns:
-        col_config["損益%"] = st.column_config.NumberColumn("損益%", format="%.2f")
+        col_config["損益%"] = st.column_config.NumberColumn("損益%", format="%.1f")
     if "含み損益(円)" in df_table.columns:
         col_config["含み損益(円)"] = st.column_config.NumberColumn("含み損益(円)", format="¥%,.0f")
     if "評価額" in df_table.columns:
@@ -1002,11 +1002,11 @@ def render_market_header(df_env: pd.DataFrame):
             unsafe_allow_html=True
         )
     with c2:
-        st.metric("TOPIX（東証全体の指数）", f"{topix_close:,.2f}",
-                  delta=f"{diff:+.2f} vs MA200（200日平均）",
+        st.metric("TOPIX（東証全体の指数）", f"{topix_close:,.1f}",
+                  delta=f"{diff:+.1f} vs MA200（200日平均）",
                   help="東証プライム全銘柄の加重平均株価指数。相場全体の動きを示す。")
     with c3:
-        st.metric("TOPIX MA200（長期平均）", f"{topix_ma200:,.2f}",
+        st.metric("TOPIX MA200（長期平均）", f"{topix_ma200:,.1f}",
                   help="過去200営業日のTOPIX平均値。これが右肩上がりで株価がMA200の上にあれば強気相場。")
     with c4:
         st.metric("環境スコア", f"{env_score}/3", delta=env_label,
@@ -1177,7 +1177,7 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
             "終値": st.column_config.NumberColumn("終値", format="¥%,.0f"),
             "売買代金(億)": st.column_config.NumberColumn("売買代金(億)", format="%.1f"),
             "PER": st.column_config.NumberColumn("PER", format="%.1f"),
-            "PBR": st.column_config.NumberColumn("PBR", format="%.2f"),
+            "PBR": st.column_config.NumberColumn("PBR", format="%.1f"),
             "売上CAGR%": st.column_config.NumberColumn("売上CAGR%", format="%.1f"),
             "ROE%": st.column_config.NumberColumn("ROE%", format="%.1f"),
             "窪田S": st.column_config.NumberColumn("窪田S", format="%d"),
@@ -1355,7 +1355,7 @@ def render_tab_chart(df_screening: pd.DataFrame):
             ("ROE", "roe_pct", "{:.1f}%"),
             ("ROIC", "roic_pct", "{:.1f}%"),
             ("PER", "per", "{:.1f}x"),
-            ("PBR", "pbr", "{:.2f}x"),
+            ("PBR", "pbr", "{:.1f}x"),
             ("売買代金(平均20日)", "avg_turnover_20d_oku", "{:.1f}億円"),
             ("流動性グレード", "liquidity_grade", "{}"),
         ]
@@ -1429,29 +1429,29 @@ def render_tab_backtest(df_bt: pd.DataFrame):
     c2.metric(
         "勝率（5日後）",
         f"{df_bt['win_5d'].mean() * 100:.1f}%",
-        delta=f"平均 {df_bt['return_5d_pct'].mean():.2f}%",
+        delta=f"平均 {df_bt['return_5d_pct'].mean():.1f}%",
     )
     c3.metric(
         "勝率（10日後）",
         f"{df_bt['win_10d'].mean() * 100:.1f}%",
-        delta=f"平均 {df_bt['return_10d_pct'].mean():.2f}%",
+        delta=f"平均 {df_bt['return_10d_pct'].mean():.1f}%",
     )
     c4.metric(
         "勝率（20日後）",
         f"{df_bt['win_20d'].mean() * 100:.1f}%",
-        delta=f"平均 {df_bt['return_20d_pct'].mean():.2f}%",
+        delta=f"平均 {df_bt['return_20d_pct'].mean():.1f}%",
     )
 
     c5, c6, c7, c8 = st.columns(4)
     _max = df_bt['return_20d_pct'].max()
     _min = df_bt['return_20d_pct'].min()
     _std = df_bt['return_20d_pct'].std()
-    c5.metric("最大利益（20日）", f"{_max:.2f}%" if pd.notna(_max) else "N/A")
-    c6.metric("最大損失（20日）", f"{_min:.2f}%" if pd.notna(_min) else "N/A")
-    c7.metric("標準偏差（20日）", f"{_std:.2f}%" if pd.notna(_std) else "N/A")
+    c5.metric("最大利益（20日）", f"{_max:.1f}%" if pd.notna(_max) else "N/A")
+    c6.metric("最大損失（20日）", f"{_min:.1f}%" if pd.notna(_min) else "N/A")
+    c7.metric("標準偏差（20日）", f"{_std:.1f}%" if pd.notna(_std) else "N/A")
     _loss_sum = abs(df_bt[df_bt['return_20d_pct'] < 0]['return_20d_pct'].sum())
     _gain_sum = df_bt[df_bt['return_20d_pct'] > 0]['return_20d_pct'].sum()
-    _pf = f"{_gain_sum / _loss_sum:.2f}" if _loss_sum > 0 else "∞"
+    _pf = f"{_gain_sum / _loss_sum:.1f}" if _loss_sum > 0 else "∞"
     c8.metric("プロフィットファクター", _pf)
 
     # チャート列
@@ -1511,7 +1511,7 @@ def render_tab_backtest(df_bt: pd.DataFrame):
         y=df_bt["return_20d_pct"],
         mode="markers",
         text=df_bt["code"],
-        hovertemplate="<b>%{text}</b><br>シグナル日: %{x|%Y-%m-%d}<br>20日後: %{y:.2f}%<extra></extra>",
+        hovertemplate="<b>%{text}</b><br>シグナル日: %{x|%Y-%m-%d}<br>20日後: %{y:.1f}%<extra></extra>",
         marker=dict(
             color=df_bt["return_20d_pct"],
             colorscale="RdYlGn",
@@ -1553,9 +1553,9 @@ def render_tab_backtest(df_bt: pd.DataFrame):
             }),
             use_container_width=True,
             column_config={
-                "5日後%": st.column_config.NumberColumn(format="%.2f"),
-                "10日後%": st.column_config.NumberColumn(format="%.2f"),
-                "20日後%": st.column_config.NumberColumn(format="%.2f"),
+                "5日後%": st.column_config.NumberColumn(format="%.1f"),
+                "10日後%": st.column_config.NumberColumn(format="%.1f"),
+                "20日後%": st.column_config.NumberColumn(format="%.1f"),
             },
         )
 
