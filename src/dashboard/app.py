@@ -342,10 +342,38 @@ def _style_screening(df: pd.DataFrame) -> pd.DataFrame:
     return styles
 
 
-def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.Figure:
+def _candlestick_fig(
+    df: pd.DataFrame,
+    title: str,
+    show_ma: bool = True,
+    purchase_px: float | None = None,
+) -> go.Figure:
     """ローソク足チャートを生成"""
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
+
+    # ── 取得単価との差分を customdata に格納 ──
+    if purchase_px is not None:
+        df["_diff"]     = df["close"] - purchase_px
+        df["_diff_pct"] = (df["close"] - purchase_px) / purchase_px * 100
+        customdata  = df[["_diff", "_diff_pct"]].values
+        diff_line   = (
+            f"取得単価: ¥{purchase_px:,.0f}<br>"
+            "差分: ¥%{customdata[0]:+,.0f}　(%{customdata[1]:+.2f}%)"
+        )
+    else:
+        customdata = None
+        diff_line  = ""
+
+    hover_tmpl = (
+        "<b>%{x|%Y年%m月%d日}</b><br>"
+        "始値: ¥%{open:,.0f}<br>"
+        "高値: ¥%{high:,.0f}<br>"
+        "安値: ¥%{low:,.0f}<br>"
+        "終値: ¥%{close:,.0f}<br>"
+        + diff_line
+        + "<extra></extra>"
+    )
 
     fig = make_subplots(
         rows=2, cols=1,
@@ -353,8 +381,9 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
         shared_xaxes=True,
         vertical_spacing=0.03,
     )
+
     # ローソク足
-    fig.add_trace(go.Candlestick(
+    candle = go.Candlestick(
         x=df["date"], open=df["open"], high=df["high"],
         low=df["low"], close=df["close"],
         name="株価",
@@ -362,7 +391,11 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
         decreasing_line_color="#f38ba8",
         increasing_fillcolor="#a6e3a1",
         decreasing_fillcolor="#f38ba8",
-    ), row=1, col=1)
+        hovertemplate=hover_tmpl,
+    )
+    if customdata is not None:
+        candle.customdata = customdata
+    fig.add_trace(candle, row=1, col=1)
 
     # 移動平均線
     if show_ma and len(df) > 25:
@@ -374,6 +407,7 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
                     mode="lines", name=f"MA{n}",
                     line=dict(color=color, width=1.5),
                     opacity=0.85,
+                    hovertemplate=f"MA{n}: ¥%{{y:,.0f}}<extra></extra>",
                 ), row=1, col=1)
 
     # 出来高バー
@@ -385,6 +419,7 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
         fig.add_trace(go.Bar(
             x=df["date"], y=df["volume"],
             name="出来高", marker_color=bar_colors, opacity=0.7,
+            hovertemplate="%{x|%Y年%m月%d日}<br>出来高: %{y:,.0f}株<extra></extra>",
         ), row=2, col=1)
 
     fig.update_layout(
@@ -399,8 +434,11 @@ def _candlestick_fig(df: pd.DataFrame, title: str, show_ma: bool = True) -> go.F
     fig.update_xaxes(
         gridcolor="#313244", showgrid=True,
         rangebreaks=[dict(bounds=["sat", "mon"])],
+        tickformat="%Y年%m月%d日",
     )
+    # 価格軸（row=1）: 円表示・小数なし
     fig.update_yaxes(gridcolor="#313244", showgrid=True)
+    fig.update_yaxes(tickformat=",.0f", ticksuffix="円", row=1, col=1)
     return fig
 
 
@@ -857,6 +895,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
                 df_price.tail(180),
                 title=f"{sel_code}  {selected_stock.split(None, 1)[1] if ' ' in selected_stock else ''}",
                 show_ma=True,
+                purchase_px=purchase_px,
             )
 
             # 取得単価の水平線
