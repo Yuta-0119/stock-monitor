@@ -22,15 +22,21 @@ fx AS (
 ),
 
 -- ─── 銘柄ごとに集計（買付のみ）────────────────────────────
+-- 投資信託の保有単位: 口数を万口に変換（SBI証券の標準表示に合わせる）
+-- 万口単位にすることで (現在値円/万口 - 取得単価円/万口) × 保有万口 = 含み損益円 が成立する
 agg AS (
   SELECT
     product_category,
     company_name,
     code,
     account,
-    SUM(shares)                                            AS total_shares,
+    CASE
+      WHEN product_category = '投資信託'
+      THEN ROUND(SUM(shares) / 10000.0, 4)  -- 口 → 万口
+      ELSE SUM(shares)
+    END                                                    AS total_shares,     -- 投資信託:万口 / それ以外:株数
     SUM(purchase_amount)                                   AS total_cost_orig,  -- 元通貨建て取得金額
-    SAFE_DIVIDE(SUM(purchase_amount), SUM(shares))         AS avg_cost_orig,    -- 元通貨建て平均取得単価
+    SAFE_DIVIDE(SUM(purchase_amount), SUM(shares))         AS avg_cost_orig,    -- 元通貨建て平均取得単価（投資信託:円/万口）
     MIN(order_date)                                        AS first_buy_date,
     MAX(order_date)                                        AS last_buy_date
   FROM `onitsuka-app.analytics.holdings`
@@ -87,21 +93,22 @@ SELECT
   sc.price_strength_score,
 
   -- ★ 評価額（円）
-  -- 投資信託: price_jpy は ETF proxy NAV（円/万口）のため shares(口) × price ÷ 10,000 で実円換算
-  -- 米国株・国内株: price_jpy は 円/株 そのまま
+  -- 投資信託: total_shares=万口, price_jpy=円/万口 → 万口 × 円/万口 = 円（直接計算可能）
+  -- 米国株・国内株: total_shares=株数, price=円/株 → そのまま
   CASE
     WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
-      THEN ROUND(aj.total_shares * ep_fund.price_jpy / 10000.0, 0)
+      THEN ROUND(aj.total_shares * ep_fund.price_jpy, 0)
     WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
       THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy), 0)
     ELSE NULL
   END AS current_value,
 
   -- ★ 含み損益（円）
+  -- 投資信託: (現在値円/万口 - 取得単価円/万口) × 保有万口 = 含み損益円
   CASE
     WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
       AND aj.total_cost IS NOT NULL
-      THEN ROUND(aj.total_shares * ep_fund.price_jpy / 10000.0 - aj.total_cost, 0)
+      THEN ROUND(aj.total_shares * ep_fund.price_jpy - aj.total_cost, 0)
     WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
       AND aj.total_cost IS NOT NULL
       THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy) - aj.total_cost, 0)
@@ -113,7 +120,7 @@ SELECT
     WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
       AND aj.total_cost > 0
       THEN ROUND(
-        SAFE_DIVIDE(aj.total_shares * ep_fund.price_jpy / 10000.0 - aj.total_cost, aj.total_cost) * 100, 2
+        SAFE_DIVIDE(aj.total_shares * ep_fund.price_jpy - aj.total_cost, aj.total_cost) * 100, 2
       )
     WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
       AND aj.total_cost > 0
