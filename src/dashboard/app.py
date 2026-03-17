@@ -672,6 +672,49 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     with c4:
         st.metric("保有銘柄数", f"{holding_count} 件")
 
+    # ─── カテゴリ別実績 ───
+    st.markdown("#### カテゴリ別実績")
+    CATEGORIES = [
+        ("国内株", "🇯🇵 国内株"),
+        ("米国株", "🇺🇸 米国株"),
+        ("投資信託", "📈 投資信託"),
+    ]
+    cat_cols = st.columns(len(CATEGORIES))
+    for col_ui, (cat_key, cat_label) in zip(cat_cols, CATEGORIES):
+        with col_ui:
+            if "product_category" in df_jp.columns:
+                df_cat = df_jp[df_jp["product_category"].str.contains(cat_key, na=False)]
+            else:
+                df_cat = pd.DataFrame()
+
+            cat_value   = df_cat["current_value"].sum()   if not df_cat.empty and "current_value"   in df_cat.columns else 0
+            cat_pnl     = df_cat["unrealized_pnl"].sum()  if not df_cat.empty and "unrealized_pnl"  in df_cat.columns else 0
+            cat_cost    = df_cat["total_cost"].sum()       if not df_cat.empty and "total_cost"      in df_cat.columns else 0
+            cat_ret     = (
+                round(df_cat["return_pct"].mean(), 2)
+                if not df_cat.empty and "return_pct" in df_cat.columns and df_cat["return_pct"].notna().any()
+                else None
+            )
+            cat_count   = len(df_cat) if not df_cat.empty else 0
+
+            # 損益率（個別 return_pct の平均が取れない場合は総コスト比で算出）
+            if cat_ret is None and cat_cost > 0:
+                cat_ret = round((cat_value - cat_cost) / cat_cost * 100, 2)
+
+            st.markdown(f"**{cat_label}**")
+            v_disp   = f"¥{int(cat_value):,}"  if cat_value  else "N/A"
+            pnl_disp = f"¥{int(cat_pnl):,}"   if cat_pnl    else "N/A"
+            ret_disp = f"{cat_ret:+.2f}%"       if cat_ret is not None else "N/A"
+
+            pnl_color = "🟢" if cat_pnl > 0 else ("🔴" if cat_pnl < 0 else "⚪")
+            st.markdown(
+                f"| | |\n|---|---|\n"
+                f"| 評価額 | **{v_disp}** |\n"
+                f"| 含み損益 | {pnl_color} **{pnl_disp}** |\n"
+                f"| 損益率 | **{ret_disp}** |\n"
+                f"| 保有銘柄数 | **{cat_count} 件** |"
+            )
+
     st.divider()
 
     # ─── アクション提案テーブル ───
