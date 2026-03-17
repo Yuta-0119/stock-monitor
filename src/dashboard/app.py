@@ -451,8 +451,23 @@ def _candlestick_fig(
 # ─────────────────────────────────────────
 
 GLOSSARY = {
-    "窪田スコア（0〜10点）": "「銘柄選びの教科書」著者・窪田剛氏のフレームワークに基づくトレード適性スコア。ボラティリティ（値動きの激しさ）とチャートの形状から算出。10点に近いほどトレードチャンス。",
-    "成長株スコア（0〜29点）": "売上・利益の成長率（CAGR）、ROE（自己資本利益率）、ROIC（投下資本利益率）、PER・PBRのバリュエーションを総合したスコア。29点に近いほど優良成長株。",
+    "窪田スコア（0〜10点）": (
+        "「銘柄選びの教科書」著者・窪田剛氏のフレームワークに基づくトレード適性スコア。"
+        "ボラティリティ評価（5点）＋チャート評価（5点）の合計で0〜10点。"
+        "【ボラティリティ 5点満点】ATR≥1.5%（値動き十分）:+2 / HV収縮（HV20<HV60）:+2 / 1ヶ月レンジ幅15〜80%:+1。"
+        "【チャート 5点満点】MA200上向き:+1 / 株価がMA200上方:+1 / もみ合い収縮（10日値幅/30日値幅<50%）:+2 / 出来高急増（20日平均比1.5倍超）:+1。"
+        "7点以上が買いを検討できる目安。"
+    ),
+    "成長株スコア（0〜29点）": (
+        "企業の成長力・収益性・割安度を数値化した投資適性スコア。"
+        "売上CAGR3年（最高8点）:≥15%→8/≥10%→6/≥5%→3。"
+        "営業利益CAGR3年（最高8点）:≥20%→8/≥10%→6/≥5%→3。"
+        "ROE（最高7点）:≥15%→7/≥10%→5/≥8%→3。"
+        "ROIC（最高6点）:≥12%→6/≥8%→4/≥5%→2。"
+        "PER割安度（最高5点）:セクター平均の80%未満→5/平均以下→3/1.3倍以下→1。"
+        "PBR（最高5点）:PBR<1.0→5/PBR<1.5→3。"
+        "15点以上が優良成長株の目安。"
+    ),
     "買いシグナル（今すぐ買いを検討）": "5つの条件（相場上昇・ATR≥1.5%・HV収縮・レンジ収縮・出来高急増）がすべて揃った銘柄。積極的なエントリーを検討できる状態。",
     "放れ待ち": "コンソリデーション（株価が一定レンジに収まった煮詰まり状態）に入っている銘柄。ブレイクアウト（価格が放れるタイミング）を待つ状態。",
     "ATR（平均真値幅）": "過去14日間の平均的な1日の値動き幅。ATR%が1.5%以上あると「十分な値動き」と判定。小さすぎると利益が取りにくい。",
@@ -732,7 +747,7 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 
         cat_value = df_cat["current_value"].sum()  if not df_cat.empty and "current_value"  in df_cat.columns else 0
         cat_pnl   = df_cat["unrealized_pnl"].sum() if not df_cat.empty and "unrealized_pnl" in df_cat.columns else 0
-        cat_cost  = df_cat["total_cost"].sum()      if not df_cat.empty and "total_cost"     in df_cat.columns else 0
+        cat_cost  = df_cat["purchase_amount"].sum()  if not df_cat.empty and "purchase_amount" in df_cat.columns else 0
         cat_ret   = (
             round(df_cat["return_pct"].mean(), 2)
             if not df_cat.empty and "return_pct" in df_cat.columns and df_cat["return_pct"].notna().any()
@@ -964,9 +979,55 @@ def render_sidebar(df_screening: pd.DataFrame, current_assets_man: int = 0):
             help="特定の業種に絞って表示します。")
 
         min_kubota = st.slider("窪田スコア（最低）", 0, 10, 0,
-            help="チャート・ボラティリティのスコア。7以上に絞ると有望銘柄のみ表示。")
+            help=(
+                "ボラティリティ（5点）＋チャート（5点）の合計スコア（0〜10点）。\n"
+                "【ボラティリティ】ATR≥1.5%: +2 / HV収縮: +2 / レンジ幅15〜80%: +1\n"
+                "【チャート】MA200上向き: +1 / MA200上方: +1 / もみ合い収縮: +2 / 出来高急増: +1\n"
+                "→ 7点以上が買いを検討できる目安"
+            ))
         min_growth = st.slider("成長株スコア（最低）", 0, 29, 0,
-            help="売上成長・ROE・PERなどのスコア。15以上に絞ると優良成長株のみ表示。")
+            help=(
+                "成長力・収益性・割安度を数値化したスコア（0〜29点＋PER/PBR加点）。\n"
+                "売上CAGR3年（8点）＋営業利益CAGR3年（8点）＋ROE（7点）＋ROIC（6点）"
+                "＋PER割安度（5点）＋PBR（5点）の合計。\n"
+                "→ 15点以上が優良成長株の目安"
+            ))
+        with st.expander("📐 スコア算出の内訳"):
+            st.markdown("""
+**🏆 窪田スコア（0〜10点）**
+
+*ボラティリティ評価（5点満点）*
+| 条件 | 点数 |
+|------|------|
+| ATR ≥ 1.5%（1日の値動きが十分） | ＋2 |
+| HV収縮（直近20日 < 過去60日の変動率） | ＋2 |
+| 1ヶ月レンジ幅が 15〜80% | ＋1 |
+
+*チャート評価（5点満点）*
+| 条件 | 点数 |
+|------|------|
+| MA200 が上向き（20日前比 +0.5%超） | ＋1 |
+| 株価が MA200 の上方 | ＋1 |
+| もみ合い収縮（10日値幅 / 30日値幅 < 50%） | ＋2 |
+| 出来高急増（20日平均の 1.5 倍超） | ＋1 |
+
+▶ **7点以上**が買い検討の目安
+
+---
+
+**📈 成長株スコア（0〜29点 ＋α）**
+
+| 指標 | 最高 | 高評価の基準 |
+|------|------|-------------|
+| 売上 CAGR（3年） | 8点 | ≥15%→8 / ≥10%→6 / ≥5%→3 |
+| 営業利益 CAGR（3年） | 8点 | ≥20%→8 / ≥10%→6 / ≥5%→3 |
+| ROE（自己資本利益率） | 7点 | ≥15%→7 / ≥10%→5 / ≥8%→3 |
+| ROIC（投下資本利益率） | 6点 | ≥12%→6 / ≥8%→4 / ≥5%→2 |
+| PER（セクター比割安度） | ＋5点 | 平均の80%未満→5 / 平均以下→3 |
+| PBR（純資産倍率） | ＋5点 | PBR < 1.0 →5 / < 1.5 →3 |
+
+▶ **15点以上**が優良成長株の目安
+""")
         sig_opts = ["すべて", "買いシグナル", "放れ待ち"]
         sel_signal = st.selectbox("シグナル", sig_opts,
             help="「買いシグナル」＝今すぐ買い検討できる銘柄。「放れ待ち」＝ブレイクアウト待ちの銘柄。")
@@ -1153,6 +1214,78 @@ def render_tab_screening(df: pd.DataFrame, sel_sector, min_kubota, min_growth, s
         "平均窪田スコア",
         f"{df_f['kubota_trade_score'].mean():.1f}" if not df_f.empty else "N/A"
     )
+
+    # ── セクター別シグナルマップ ──────────────────────────────
+    st.markdown("#### 📊 セクター別シグナルマップ")
+
+    if not df_f.empty and "sector33_name" in df_f.columns and "kubota_signal" in df_f.columns:
+        # クロス集計
+        _sig_map = (
+            df_f.groupby("sector33_name")["kubota_signal"]
+            .value_counts()
+            .unstack(fill_value=0)
+            .reset_index()
+        )
+        # 必要列を補完
+        for _col in ["買いシグナル", "放れ待ち"]:
+            if _col not in _sig_map.columns:
+                _sig_map[_col] = 0
+        _sig_map["その他"] = _sig_map.drop(columns=["sector33_name", "買いシグナル", "放れ待ち"], errors="ignore").sum(axis=1)
+        _sig_map["合計"] = _sig_map["買いシグナル"] + _sig_map["放れ待ち"] + _sig_map["その他"]
+        _sig_map["買いシグナル率"] = _sig_map["買いシグナル"] / _sig_map["合計"].replace(0, 1) * 100
+        _sig_map = _sig_map.sort_values("買いシグナル率", ascending=True)
+
+        # 横積み棒グラフ
+        _fig_sec = go.Figure()
+        _fig_sec.add_trace(go.Bar(
+            y=_sig_map["sector33_name"],
+            x=_sig_map["買いシグナル"],
+            name="買いシグナル",
+            orientation="h",
+            marker_color="#a6e3a1",
+            customdata=_sig_map[["買いシグナル率"]].values,
+            hovertemplate="%{y}<br>買いシグナル: %{x}件 (%{customdata[0]:.1f}%)<extra></extra>",
+        ))
+        _fig_sec.add_trace(go.Bar(
+            y=_sig_map["sector33_name"],
+            x=_sig_map["放れ待ち"],
+            name="放れ待ち",
+            orientation="h",
+            marker_color="#f9e2af",
+            hovertemplate="%{y}<br>放れ待ち: %{x}件<extra></extra>",
+        ))
+        _fig_sec.add_trace(go.Bar(
+            y=_sig_map["sector33_name"],
+            x=_sig_map["その他"],
+            name="その他",
+            orientation="h",
+            marker_color="#45475a",
+            hovertemplate="%{y}<br>その他: %{x}件<extra></extra>",
+        ))
+        _fig_sec.update_layout(
+            barmode="stack",
+            height=max(320, len(_sig_map) * 26),
+            margin=dict(l=170, r=40, t=20, b=30),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="#313244", title="銘柄数"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+        )
+        st.plotly_chart(_fig_sec, use_container_width=True)
+
+        # 集計テーブル
+        with st.expander("📋 セクター別集計テーブル"):
+            _tbl = _sig_map[["sector33_name", "買いシグナル", "放れ待ち", "その他", "合計", "買いシグナル率"]].rename(
+                columns={"sector33_name": "セクター", "買いシグナル率": "買いシグナル率(%)"}
+            )
+            _tbl = _tbl.sort_values("買いシグナル率(%)", ascending=False).reset_index(drop=True)
+            st.dataframe(
+                _tbl.style.format({"買いシグナル率(%)": "{:.1f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("表示できるデータがありません。")
 
     # 表示列
     COLS = {
@@ -1579,8 +1712,6 @@ def render_tab_topix(df_topix: pd.DataFrame):
     period_label = st.radio(
         "表示期間", list(period_map.keys()), horizontal=True, index=1, key="topix_period"
     )
-    df_t = df_topix.tail(period_map[period_label]).copy()
-
     # MA計算
     df_full = df_topix.copy()
     for n in [25, 75, 200]:
@@ -1635,6 +1766,516 @@ def render_tab_topix(df_topix: pd.DataFrame):
             margin=dict(t=40, b=40),
         )
         st.plotly_chart(fig_monthly, use_container_width=True)
+
+
+# ─────────────────────────────────────────
+# アクションボード（ヘルパー + メイン関数）
+# ─────────────────────────────────────────
+
+def _lerp_color(intensity: float, dark=(49, 50, 68), light=(166, 227, 161)) -> str:
+    """0.0〜1.0 の強度を dark→light のグラデーション色に変換"""
+    r = int(dark[0] + intensity * (light[0] - dark[0]))
+    g = int(dark[1] + intensity * (light[1] - dark[1]))
+    b = int(dark[2] + intensity * (light[2] - dark[2]))
+    return f"rgb({r},{g},{b})"
+
+
+def _mini_candlestick(
+    df_price: pd.DataFrame,
+    code: str,
+    company: str,
+    pnl_pct: float | None = None,
+    purchase_px: float | None = None,
+    signal: str = "",
+) -> go.Figure:
+    """保有銘柄用ミニローソク足（チャートボード向け 直近60日）"""
+    df = df_price.tail(60).copy()
+    df["date"] = pd.to_datetime(df["date"])
+
+    # 損益に応じた背景色
+    if pnl_pct is not None and pnl_pct >= 10:
+        bg = "rgba(74,222,128,0.10)"
+    elif pnl_pct is not None and pnl_pct >= 0:
+        bg = "rgba(74,222,128,0.04)"
+    elif pnl_pct is not None and pnl_pct >= -5:
+        bg = "rgba(248,113,113,0.04)"
+    elif pnl_pct is not None:
+        bg = "rgba(248,113,113,0.12)"
+    else:
+        bg = "rgba(30,30,46,0.6)"
+
+    pnl_color = "#4ade80" if (pnl_pct or 0) >= 0 else "#f87171"
+    pnl_str = f"{pnl_pct:+.1f}%" if pnl_pct is not None else ""
+
+    sig_icon = "🟢 " if signal == "買いシグナル" else ("🟡 " if "放れ待ち" in str(signal) else "")
+    title_text = (
+        f"{sig_icon}<b>{code}</b> "
+        f"<span style='color:#a6adc8;font-size:11px'>{company[:10]}</span>"
+        + (f"  <b style='color:{pnl_color}'>{pnl_str}</b>" if pnl_str else "")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df["date"], open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"],
+        increasing_line_color="#a6e3a1", decreasing_line_color="#f38ba8",
+        increasing_fillcolor="#a6e3a1", decreasing_fillcolor="#f38ba8",
+        showlegend=False, hoverinfo="skip",
+    ))
+    ma25 = df["close"].rolling(25).mean()
+    if ma25.notna().any():
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=ma25, mode="lines",
+            line=dict(color="#74c7ec", width=1),
+            showlegend=False, hoverinfo="skip",
+        ))
+    if purchase_px is not None:
+        fig.add_hline(y=purchase_px, line_dash="dot", line_color="#fab387", line_width=1.2)
+
+    fig.update_layout(
+        title=dict(text=title_text, font=dict(size=12), x=0.04, xanchor="left"),
+        height=185,
+        paper_bgcolor=bg,
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=4, r=4, t=34, b=4),
+        xaxis=dict(visible=False, rangeslider_visible=False),
+        yaxis=dict(visible=False),
+    )
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    return fig
+
+
+def render_tab_actionboard(
+    df_env: pd.DataFrame,
+    df_screening: pd.DataFrame,
+    df_holdings: pd.DataFrame,
+):
+    """📡 アクションボード — 今日やるべきことを30秒で把握する"""
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 1: 相場サマリーバナー
+    # ═══════════════════════════════════════════════════
+    if not df_env.empty:
+        env = df_env.iloc[0]
+        phase      = str(env.get("market_phase", "NEUTRAL"))
+        env_score  = int(_safe_num(env.get("environment_score")) or 0)
+        topix_close = _safe_num(env.get("topix_close")) or 0
+        topix_ma200 = _safe_num(env.get("topix_ma200")) or 0
+        topix_diff_pct = (topix_close - topix_ma200) / topix_ma200 * 100 if topix_ma200 else 0
+    else:
+        phase, env_score, topix_close, topix_diff_pct = "NEUTRAL", 0, 0, 0
+
+    entry_cnt = int((df_screening["kubota_signal"] == "買いシグナル").sum()) if not df_screening.empty else 0
+    watch_cnt = int(df_screening["kubota_signal"].str.contains("放れ待ち", na=False).sum()) if not df_screening.empty else 0
+
+    if phase == "BULL" and env_score >= 3:
+        b_bg, b_bd, b_icon = "linear-gradient(135deg,#1e3a1e,#2d5a2d)", "#a6e3a1", "🐂 BULL"
+        action_txt = "積極的なエントリーを検討できます"
+    elif phase == "BEAR" or env_score <= 1:
+        b_bg, b_bd, b_icon = "linear-gradient(135deg,#3a1e1e,#5a2d2d)", "#f38ba8", "🐻 BEAR"
+        action_txt = "新規の買いは慎重に。シグナルが出ていても様子見推奨"
+    else:
+        b_bg, b_bd, b_icon = "linear-gradient(135deg,#2a2b3d,#313244)", "#fab387", "🟡 NEUTRAL"
+        action_txt = "特に好条件の銘柄のみ、慎重に検討してください"
+
+    diff_color = "#a6e3a1" if topix_diff_pct >= 0 else "#f38ba8"
+    st.markdown(f"""
+<div style="background:{b_bg};border:2px solid {b_bd};border-radius:12px;
+            padding:14px 22px;display:flex;align-items:center;gap:24px;
+            flex-wrap:wrap;margin-bottom:16px;">
+  <div style="font-size:1.3em;font-weight:700;color:{b_bd};">{b_icon} 相場</div>
+  <div style="color:#cdd6f4;font-size:.95em;">
+    TOPIX <b>{topix_close:,.1f}</b>
+    <span style="color:{diff_color};font-size:.88em;">&nbsp;(MA200比 {topix_diff_pct:+.1f}%)</span>
+  </div>
+  <div style="color:#a6adc8;font-size:.88em;">
+    🟢 買いシグナル <b style="color:#a6e3a1;">{entry_cnt} 件</b>
+    &nbsp;｜&nbsp;
+    🟡 放れ待ち <b style="color:#f9e2af;">{watch_cnt} 件</b>
+  </div>
+  <div style="margin-left:auto;color:#cdd6f4;font-size:.88em;font-style:italic;">
+    {action_txt}
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 2: 今すぐアクション（2カラム）
+    # ═══════════════════════════════════════════════════
+    st.markdown("### 🚨 今すぐ判断が必要な銘柄")
+    col_buy, col_alert = st.columns(2)
+
+    # ── 左: 買い候補 ──
+    with col_buy:
+        st.markdown("#### 📈 買い候補（新規エントリー検討）")
+        if df_screening.empty:
+            st.info("スクリーニングデータがありません。")
+        else:
+            df_entry = df_screening[df_screening["kubota_signal"] == "買いシグナル"].copy()
+            df_watch_hi = (
+                df_screening[
+                    df_screening["kubota_signal"].str.contains("放れ待ち", na=False)
+                    & (df_screening.get("kubota_trade_score", pd.Series(dtype=float)) >= 7)
+                ].copy()
+                if "kubota_trade_score" in df_screening.columns else pd.DataFrame()
+            )
+
+            if df_entry.empty and df_watch_hi.empty:
+                st.success("✅ 現在、新規エントリー候補はありません。\n\n次のシグナルが出るまで待ちましょう。")
+            else:
+                # 買いシグナル（上位5件）
+                for _, row in df_entry.head(5).iterrows():
+                    ksc   = _safe_num(row.get("kubota_trade_score")) or 0
+                    close = _safe_num(row.get("latest_close"))
+                    atr_p = _safe_num(row.get("atr_pct"))
+                    earn  = _safe_num(row.get("days_to_earnings"))
+                    conf  = _safe_num(row.get("signal_confidence"))
+
+                    stop_str = target_str = ""
+                    if close and atr_p:
+                        atr_v = close * atr_p / 100
+                        stop_str   = f"🛑 損切り: ¥{round(close - 2 * atr_v):,}"
+                        target_str = f"🎯 利確目安: ¥{round(close + 3 * atr_v):,}"
+
+                    star = "⭐⭐⭐" if ksc >= 9 else ("⭐⭐" if ksc >= 7 else "⭐")
+                    p_color = "#a6e3a1" if ksc >= 9 else ("#74c7ec" if ksc >= 7 else "#f9e2af")
+                    earn_badge = (
+                        f" <span style='background:#f38ba8;color:#1e1e2e;border-radius:3px;"
+                        f"padding:1px 5px;font-size:.75em;font-weight:700;'>⚠️ 決算{int(earn)}日後</span>"
+                        if earn is not None and earn <= 20 else ""
+                    )
+                    conf_badge = (
+                        f" <span style='background:#a6e3a155;color:#a6e3a1;border-radius:3px;"
+                        f"padding:1px 5px;font-size:.75em;'>確度 {int(conf)}%</span>"
+                        if conf is not None else ""
+                    )
+                    st.markdown(f"""
+<div style="border:1px solid #a6e3a155;border-left:4px solid {p_color};
+            border-radius:8px;padding:10px 14px;margin-bottom:8px;
+            background:rgba(166,227,161,0.04);">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+    <div>
+      <span style="font-weight:700;color:#cdd6f4;">{row.get('code','')} {row.get('company_name','')[:14]}</span>
+      {earn_badge}{conf_badge}
+      <div style="color:#a6adc8;font-size:.82em;margin-top:2px;">{row.get('sector33_name','')}</div>
+    </div>
+    <span style="font-size:.85em;color:{p_color};font-weight:700;">{star}</span>
+  </div>
+  <div style="margin-top:6px;display:flex;gap:16px;flex-wrap:wrap;font-size:.88em;">
+    <span style="color:#cdd6f4;">¥{int(close):,}</span>
+    <span style="color:#a6adc8;">窪田S <b style="color:#a6e3a1;">{int(ksc)}/10</b></span>
+  </div>
+  <div style="margin-top:4px;font-size:.82em;color:#6c7086;">{stop_str}&nbsp;&nbsp;{target_str}</div>
+</div>
+""", unsafe_allow_html=True)
+
+                # 放れ待ち高スコア（上位3件）
+                if not df_watch_hi.empty:
+                    st.markdown(
+                        "<div style='color:#f9e2af;font-size:.88em;font-weight:600;margin:6px 0 4px;'>"
+                        "🟡 放れ直前候補（窪田スコア7点以上）</div>",
+                        unsafe_allow_html=True,
+                    )
+                    for _, row in df_watch_hi.head(3).iterrows():
+                        ksc   = _safe_num(row.get("kubota_trade_score")) or 0
+                        close = _safe_num(row.get("latest_close"))
+                        st.markdown(f"""
+<div style="border:1px solid #f9e2af44;border-left:3px solid #f9e2af;
+            border-radius:6px;padding:8px 12px;margin-bottom:5px;
+            background:rgba(249,226,175,0.04);">
+  <span style="font-weight:600;color:#cdd6f4;">{row.get('code','')} {row.get('company_name','')[:14]}</span>
+  <span style="float:right;color:#a6adc8;font-size:.85em;">¥{int(close):,}  S:{int(ksc)}/10</span>
+  <div style="color:#a6adc8;font-size:.8em;margin-top:2px;">{row.get('sector33_name','')}</div>
+</div>""", unsafe_allow_html=True)
+
+    # ── 右: 保有銘柄アラート ──
+    with col_alert:
+        st.markdown("#### ⚠️ 保有銘柄のアラート")
+        if df_holdings.empty:
+            st.info("保有銘柄データがありません。")
+        else:
+            alerts = []
+            for _, row in df_holdings.iterrows():
+                ret    = _safe_num(row.get("return_pct"))
+                earn   = _safe_num(row.get("days_to_earnings"))
+                code   = str(row.get("code", ""))
+                name   = str(row.get("company_name", ""))[:16]
+                close  = _safe_num(row.get("latest_close"))
+                pnl    = _safe_num(row.get("unrealized_pnl"))
+                cat    = str(row.get("product_category", ""))
+
+                price_disp = f"¥{int(close):,}" if close else ""
+                if ret is not None and ret <= -8:
+                    alerts.append(("🛑", "損切り検討", "#f38ba8", code, name, cat,
+                                   f"含み損 {ret:+.1f}% — 損切りラインを超過しています", price_disp, pnl, 0))
+                elif ret is not None and ret >= 20:
+                    alerts.append(("💰", "利確検討", "#a6e3a1", code, name, cat,
+                                   f"含み益 {ret:+.1f}% — 目標利益に到達しています", price_disp, pnl, 1))
+                elif earn is not None and earn <= 7:
+                    alerts.append(("📅", "決算直前", "#f38ba8", code, name, cat,
+                                   f"決算まで {int(earn)} 日 — 急激な値動きに注意", price_disp, pnl, 2))
+                elif earn is not None and earn <= 14:
+                    alerts.append(("📅", "決算前注意", "#fab387", code, name, cat,
+                                   f"決算まで {int(earn)} 日 — ポジション縮小を検討", price_disp, pnl, 3))
+                elif ret is not None and ret <= -5:
+                    alerts.append(("⚠️", "含み損注意", "#fab387", code, name, cat,
+                                   f"含み損 {ret:+.1f}% — 損切りライン接近", price_disp, pnl, 4))
+
+            # 優先度順にソート
+            alerts.sort(key=lambda x: x[9])
+
+            if not alerts:
+                st.success("✅ 今日は緊急アクションが必要な保有銘柄はありません。")
+                st.caption("全ての保有銘柄が正常な範囲内にあります。ゆっくり様子を見ましょう。")
+            else:
+                for icon, label, color, c, n, cat, reason, price_disp, pnl_val, _ in alerts:
+                    pnl_color = "#4ade80" if (pnl_val or 0) >= 0 else "#f87171"
+                    pnl_disp = f"含み損益: ¥{int(pnl_val):,}" if pnl_val is not None else ""
+                    st.markdown(f"""
+<div style="border:1px solid {color}55;border-left:4px solid {color};
+            border-radius:8px;padding:10px 14px;margin-bottom:8px;background:{color}0d;">
+  <div style="display:flex;justify-content:space-between;">
+    <span style="font-weight:700;color:{color};">{icon} {label}</span>
+    <span style="font-size:.85em;color:#a6adc8;">{price_disp}</span>
+  </div>
+  <div style="color:#cdd6f4;font-weight:600;margin-top:3px;">{c} {n}
+    <span style="font-size:.8em;color:#6c7086;font-weight:400;"> {cat}</span>
+  </div>
+  <div style="color:#a6adc8;font-size:.85em;margin-top:2px;">{reason}</div>
+  {f'<div style="color:{pnl_color};font-size:.85em;font-weight:700;margin-top:3px;">{pnl_disp}</div>' if pnl_disp else ''}
+</div>
+""", unsafe_allow_html=True)
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 3: 保有銘柄チャートボード
+    # ═══════════════════════════════════════════════════
+    st.markdown("### 📊 保有銘柄チャートボード")
+    st.caption("直近60日のローソク足 ＋ MA25 ＋ 取得単価ライン（橙破線）。背景色：緑=含み益 / 赤=含み損")
+
+    if df_holdings.empty:
+        st.info("保有銘柄データがありません。")
+    else:
+        if "product_category" in df_holdings.columns:
+            domestic_h = df_holdings[
+                df_holdings["product_category"].str.contains("国内", na=False)
+                & df_holdings["code"].notna()
+                & (df_holdings["code"].astype(str).str.strip() != "")
+            ].copy()
+        else:
+            domestic_h = df_holdings[df_holdings["code"].notna()].copy()
+
+        if domestic_h.empty:
+            st.info("国内株式の保有銘柄がありません（米国株・投資信託は株価データ非対応）。")
+        else:
+            n_show = min(9, len(domestic_h))
+            with st.spinner("チャートデータ読込中..."):
+                for chunk_start in range(0, n_show, 3):
+                    chunk = domestic_h.iloc[chunk_start:chunk_start + 3]
+                    chart_cols = st.columns(3)
+                    for col_c, (_, hrow) in zip(chart_cols, chunk.iterrows()):
+                        code_h     = str(hrow.get("code", ""))
+                        name_h     = str(hrow.get("company_name", ""))
+                        pnl_pct_h  = _safe_num(hrow.get("return_pct"))
+                        purchase_h = _safe_num(hrow.get("purchase_price"))
+                        signal_h   = str(hrow.get("kubota_signal", ""))
+                        try:
+                            df_ph = load_price_history(code_h)
+                        except Exception:
+                            df_ph = pd.DataFrame()
+                        with col_c:
+                            if df_ph.empty:
+                                st.warning(f"{code_h} データなし")
+                            else:
+                                df_ph["date"] = pd.to_datetime(df_ph["date"])
+                                df_ph = df_ph.sort_values("date")
+                                st.plotly_chart(
+                                    _mini_candlestick(
+                                        df_ph, code_h, name_h,
+                                        pnl_pct=pnl_pct_h,
+                                        purchase_px=purchase_h,
+                                        signal=signal_h,
+                                    ),
+                                    use_container_width=True,
+                                    config={"displayModeBar": False},
+                                )
+                                # 取得単価 / 現在値 / 差分バー
+                                if purchase_h is not None:
+                                    cur_h = float(df_ph.iloc[-1]["close"])
+                                    dv    = cur_h - purchase_h
+                                    dp    = dv / purchase_h * 100
+                                    dc    = "#4ade80" if dv >= 0 else "#f87171"
+                                    ds    = "+" if dv >= 0 else ""
+                                    st.markdown(f"""
+<div style="display:flex;border:1px solid #313244;border-top:none;
+            border-radius:0 0 6px 6px;font-size:.75em;text-align:center;overflow:hidden;
+            margin-top:-6px;">
+  <div style="flex:1;padding:3px 2px;background:#1e1e2e;">
+    <div style="color:#45475a;font-size:.85em;">取得単価</div>
+    <div style="color:#a6adc8;font-weight:600;">¥{int(purchase_h):,}</div>
+  </div>
+  <div style="flex:1;padding:3px 2px;background:#1e1e2e;border-left:1px solid #313244;">
+    <div style="color:#45475a;font-size:.85em;">現在値</div>
+    <div style="color:#cdd6f4;font-weight:600;">¥{int(cur_h):,}</div>
+  </div>
+  <div style="flex:1;padding:3px 2px;background:{dc}18;border-left:1px solid #313244;">
+    <div style="color:#45475a;font-size:.85em;">差分(円)</div>
+    <div style="color:{dc};font-weight:700;">{ds}¥{int(abs(dv)):,}</div>
+  </div>
+  <div style="flex:1;padding:3px 2px;background:{dc}18;border-left:1px solid #313244;">
+    <div style="color:#45475a;font-size:.85em;">差分(%)</div>
+    <div style="color:{dc};font-weight:700;">{ds}{dp:.1f}%</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+            if len(domestic_h) > 9:
+                st.caption(
+                    f"※ 保有銘柄 {len(domestic_h)} 件中、上位 9 件を表示。"
+                    "全件は「💼 保有銘柄管理」タブをご確認ください。"
+                )
+
+    st.divider()
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 4: 全銘柄ヒートマップ（セクター別ツリーマップ）
+    # ═══════════════════════════════════════════════════
+    st.markdown("### 🌡️ 全銘柄ヒートマップ")
+    st.caption(
+        "セクター別ツリーマップ。**セルサイズ＝売買代金**（大きいほど流動性が高い）、"
+        "**色でシグナル状態・スコア**を確認できます。セルをクリックするとセクター内を拡大表示。"
+    )
+
+    if df_screening.empty:
+        st.info("スクリーニングデータがありません。")
+    else:
+        hmap_mode = st.radio(
+            "色の基準",
+            ["シグナル状態", "窪田スコア", "成長株スコア"],
+            horizontal=True,
+            key="hmap_mode",
+        )
+
+        df_hm = df_screening.copy()
+        # 売買代金が欠損の場合は最小値（0.1億円）で補完
+        df_hm["_size"] = df_hm["avg_turnover_20d_oku"].fillna(0.1).clip(lower=0.1)
+
+        # モード別に色の基準値を設定
+        if hmap_mode == "シグナル状態":
+            # 買いシグナル=10, 放れ待ち=4, その他=-3
+            def _sig_num(sig: str) -> float:
+                if sig == "買いシグナル":
+                    return 10.0
+                if "放れ待ち" in str(sig):
+                    return 4.0
+                return -3.0
+            df_hm["_color"] = df_hm["kubota_signal"].apply(_sig_num)
+            color_min, color_max = -3.0, 10.0
+            # -3→赤, 4→黄(約0.54), 10→緑
+            colorscale = [
+                [0.00, "#f38ba8"],
+                [0.54, "#f9e2af"],
+                [1.00, "#a6e3a1"],
+            ]
+        elif hmap_mode == "窪田スコア":
+            df_hm["_color"] = df_hm["kubota_trade_score"].fillna(0).astype(float)
+            color_min, color_max = 0.0, 10.0
+            colorscale = [[0.0, "#313244"], [1.0, "#a6e3a1"]]
+        else:
+            df_hm["_color"] = df_hm["growth_invest_score"].fillna(0).astype(float)
+            color_min, color_max = 0.0, 29.0
+            colorscale = [[0.0, "#313244"], [1.0, "#74c7ec"]]
+
+        # ツリーマップ用データ（セクターノード + 銘柄ノード）
+        sectors = df_hm["sector33_name"].fillna("その他").unique().tolist()
+        ids, labels, parents, values, node_colors, customdata = [], [], [], [], [], []
+
+        # セクターノード（親）
+        for sec in sectors:
+            ids.append(f"__sec__{sec}")
+            labels.append(sec)
+            parents.append("")
+            values.append(0.0)
+            node_colors.append(0.0)
+            customdata.append(["", sec, "-", 0, 0, "-"])
+
+        # 銘柄ノード（子）
+        for _, row in df_hm.iterrows():
+            code  = str(row.get("code", ""))
+            name  = str(row.get("company_name", ""))
+            sig   = str(row.get("kubota_signal", "-"))
+            ksc   = int(_safe_num(row.get("kubota_trade_score")) or 0)
+            gsc   = int(_safe_num(row.get("growth_invest_score")) or 0)
+            close = _safe_num(row.get("latest_close"))
+            sec   = str(row.get("sector33_name") or "その他")
+            size  = float(row.get("_size", 0.1))
+
+            ids.append(code)
+            labels.append(code)
+            parents.append(f"__sec__{sec}")
+            values.append(size)
+            node_colors.append(float(row.get("_color", 0.0)))
+            customdata.append([
+                name, sig, ksc, gsc,
+                f"¥{int(close):,}" if close else "-",
+            ])
+
+        fig_hm = go.Figure(go.Treemap(
+            ids=ids,
+            labels=labels,
+            parents=parents,
+            values=values,
+            branchvalues="remainder",
+            marker=dict(
+                colors=node_colors,
+                colorscale=colorscale,
+                cmin=color_min,
+                cmax=color_max,
+                showscale=False,
+                line=dict(width=1, color="#1e1e2e"),
+            ),
+            texttemplate="<b>%{label}</b>",
+            hovertemplate=(
+                "<b>%{label}  %{customdata[0]}</b><br>"
+                "シグナル: %{customdata[1]}<br>"
+                "窪田スコア: %{customdata[2]}/10　　成長株: %{customdata[3]}/29<br>"
+                "現在値: %{customdata[4]}<br>"
+                "売買代金(20日均): %{value:.1f}億円"
+                "<extra></extra>"
+            ),
+            customdata=customdata,
+            tiling=dict(packing="squarify", pad=2),
+            textfont=dict(color="#cdd6f4", size=9),
+            pathbar=dict(
+                visible=True,
+                thickness=18,
+                textfont=dict(color="#cdd6f4", size=10),
+            ),
+        ))
+        fig_hm.update_layout(
+            height=600,
+            paper_bgcolor="#1e1e2e",
+            plot_bgcolor="#1e1e2e",
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+
+        # 凡例
+        if hmap_mode == "シグナル状態":
+            st.markdown(
+                "<span style='background:#a6e3a1;color:#1e1e2e;padding:2px 10px;border-radius:4px;"
+                "font-size:.82em;font-weight:700;margin-right:6px;'>■ 買いシグナル</span>"
+                "<span style='background:#f9e2af;color:#1e1e2e;padding:2px 10px;border-radius:4px;"
+                "font-size:.82em;margin-right:6px;'>■ 放れ待ち</span>"
+                "<span style='background:#585b70;color:#cdd6f4;padding:2px 10px;border-radius:4px;"
+                "font-size:.82em;'>■ その他</span>",
+                unsafe_allow_html=True,
+            )
+        elif hmap_mode == "窪田スコア":
+            st.caption("暗色 = スコア低（0点）→ 明緑 = スコア高（10点）")
+        else:
+            st.caption("暗色 = スコア低（0点）→ 明青緑 = スコア高（29点）")
+
+        st.plotly_chart(fig_hm, use_container_width=True)
 
 
 # ─────────────────────────────────────────
@@ -1701,7 +2342,8 @@ def main():
     st.divider()
 
     # タブ
-    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📡 アクションボード",
         "💼 保有銘柄管理",
         "🏆 今日の注目銘柄",
         "🔍 銘柄詳細・売買判定",
@@ -1711,19 +2353,22 @@ def main():
     ])
 
     with tab0:
-        render_tab_holdings(df_holdings)
+        render_tab_actionboard(df_env, df_screening, df_holdings)
 
     with tab1:
+        render_tab_holdings(df_holdings)
+
+    with tab2:
         market_phase = str(df_env.iloc[0].get("market_phase", "")) if not df_env.empty else ""
         render_tab_candidates(df_screening, market_phase)
 
-    with tab2:
+    with tab3:
         render_tab_chart(df_screening)
 
-    with tab3:
+    with tab4:
         render_tab_screening(df_screening, sel_sector, min_kubota, min_growth, sel_signal)
 
-    with tab4:
+    with tab5:
         try:
             df_bt = load_backtest()
         except Exception as e:
@@ -1731,7 +2376,7 @@ def main():
             df_bt = pd.DataFrame()
         render_tab_backtest(df_bt)
 
-    with tab5:
+    with tab6:
         try:
             df_topix = load_topix_history()
         except Exception as e:
