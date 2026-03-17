@@ -618,13 +618,14 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 
     # ─── ポートフォリオサマリー ───
     st.markdown("### ポートフォリオサマリー")
+    st.caption("※ 評価額・損益は国内株式のみ集計。米国株・投資信託は J-Quants API 対象外のため現在値データなし。")
 
-    total_value = df_holdings["current_value"].sum() if "current_value" in df_holdings.columns else 0
-    total_pnl = df_holdings["unrealized_pnl"].sum() if "unrealized_pnl" in df_holdings.columns else 0
-    total_cost = df_holdings["purchase_amount"].sum() if "purchase_amount" in df_holdings.columns else 0
-    avg_return = (
-        df_holdings["return_pct"].mean()
-        if "return_pct" in df_holdings.columns and df_holdings["return_pct"].notna().any()
+    total_value = df_jp["current_value"].sum() if "current_value" in df_jp.columns else 0
+    total_pnl   = df_jp["unrealized_pnl"].sum() if "unrealized_pnl" in df_jp.columns else 0
+    total_cost  = df_jp["purchase_amount"].sum() if "purchase_amount" in df_jp.columns else 0
+    avg_return  = (
+        df_jp["return_pct"].mean()
+        if "return_pct" in df_jp.columns and df_jp["return_pct"].notna().any()
         else None
     )
     holding_count = len(df_holdings)
@@ -649,6 +650,22 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         st.metric("保有銘柄数", f"{holding_count} 件")
 
     st.divider()
+
+    # ─── None値の補完（米国株・投資信託はJ-Quants対象外）───
+    def _fill_non_jp(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        # product_typeが国内株式以外はシグナル列を「ー（対象外）」で埋める
+        non_jp_mask = ~df.get("product_type", pd.Series(["国内株式"] * len(df))).str.contains("国内株式", na=False)
+        signal_col = "kubota_signal"
+        if signal_col in df.columns:
+            df.loc[non_jp_mask, signal_col] = "ー（対象外）"
+        # 現在値がNullの行の損益関連列も「ー」表示用にNaNのまま残す（column_configで空白表示）
+        return df
+    df_holdings = _fill_non_jp(df_holdings)
+
+    # ─── ポートフォリオサマリー（国内株式のみで計算）───
+    df_jp = df_holdings[df_holdings.get("product_type", pd.Series()).str.contains("国内株式", na=False)] \
+        if "product_type" in df_holdings.columns else df_holdings
 
     # ─── アクション提案テーブル ───
     st.markdown("### アクション提案")
@@ -703,6 +720,8 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         return styles
 
     col_config = {}
+    if "保有株数" in df_table.columns:
+        col_config["保有株数"] = st.column_config.NumberColumn("保有株数", format="%d")
     if "取得単価" in df_table.columns:
         col_config["取得単価"] = st.column_config.NumberColumn("取得単価", format="¥%,.0f")
     if "現在値" in df_table.columns:
