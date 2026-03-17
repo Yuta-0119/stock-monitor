@@ -352,14 +352,18 @@ def _candlestick_fig(
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
 
-    # ── 取得単価との差分を customdata に格納 ──
+    # ── 取得単価との差分を customdata に格納（Python側で整形済み文字列として渡す）──
     if purchase_px is not None:
         df["_diff"]     = df["close"] - purchase_px
         df["_diff_pct"] = (df["close"] - purchase_px) / purchase_px * 100
-        customdata  = df[["_diff", "_diff_pct"]].values
+        # Plotly の Candlestick は customdata のフォーマット指定を無視するため
+        # Python 側で先に文字列にフォーマットして渡す
+        df["_diff_str"]     = df["_diff"].map(lambda v: f"{v:+,.0f}")
+        df["_diff_pct_str"] = df["_diff_pct"].map(lambda v: f"{v:+.1f}")
+        customdata  = df[["_diff_str", "_diff_pct_str"]].values
         diff_line   = (
             f"取得単価: ¥{purchase_px:,.0f}<br>"
-            "差分: ¥%{customdata[0]:+,.0f}　(%{customdata[1]:+.1f}%)"
+            "差分: ¥%{customdata[0]}　(%{customdata[1]}%)"
         )
     else:
         customdata = None
