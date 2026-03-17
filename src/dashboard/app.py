@@ -617,7 +617,9 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
     def _fill_non_jp(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         cat_col = "product_category"
-        non_jp_mask = ~df.get(cat_col, pd.Series(["国内株式"] * len(df))).str.contains("国内", na=False)
+        if cat_col not in df.columns:
+            return df
+        non_jp_mask = ~df[cat_col].str.contains("国内", na=False)
         if "kubota_signal" in df.columns:
             df.loc[non_jp_mask, "kubota_signal"] = "ー（対象外）"
         return df
@@ -643,16 +645,17 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        val_disp = f"¥{int(total_value):,}" if total_value else "N/A"
+        val_disp = f"¥{int(total_value):,}" if pd.notna(total_value) and total_value != 0 else "N/A"
         st.metric("評価総額", val_disp, help="現在値 × 保有株数の合計（国内株式のみ）")
     with c2:
-        pnl_disp = f"¥{int(total_pnl):,}" if total_pnl else "N/A"
-        delta_str = f"{'+' if total_pnl >= 0 else ''}{int(total_pnl):,}円" if total_pnl else None
+        pnl_notna = pd.notna(total_pnl)
+        pnl_disp  = f"¥{int(total_pnl):,}" if pnl_notna else "N/A"
+        delta_str = f"{'+' if total_pnl >= 0 else ''}{int(total_pnl):,}円" if pnl_notna else None
         st.metric(
             "含み損益",
             pnl_disp,
             delta=delta_str,
-            delta_color="normal" if total_pnl >= 0 else "inverse",
+            delta_color="normal" if (pnl_notna and total_pnl >= 0) else "inverse",
         )
     with c3:
         avg_ret_disp = f"{avg_return:+.2f}%" if avg_return is not None else "N/A"
@@ -1146,7 +1149,11 @@ def render_tab_chart(df_screening: pd.DataFrame):
     selected = st.selectbox("銘柄を選択", options, key="chart_sel")
     sel_code = selected.split()[0].strip()
 
-    stock = df_screening[df_screening["code"] == sel_code].iloc[0]
+    _matched = df_screening[df_screening["code"] == sel_code]
+    if _matched.empty:
+        st.warning(f"銘柄 {sel_code} のデータが見つかりません。")
+        return
+    stock = _matched.iloc[0]
     market_phase = str(stock.get("market_phase", ""))
 
     # ── 買い時・売り時判定パネル（チャートより先に表示）
@@ -1316,14 +1323,16 @@ def render_tab_backtest(df_bt: pd.DataFrame):
     )
 
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("最大利益（20日）", f"{df_bt['return_20d_pct'].max():.2f}%")
-    c6.metric("最大損失（20日）", f"{df_bt['return_20d_pct'].min():.2f}%")
-    c7.metric("標準偏差（20日）", f"{df_bt['return_20d_pct'].std():.2f}%")
-    c8.metric(
-        "プロフィットファクター",
-        f"{df_bt[df_bt['return_20d_pct'] > 0]['return_20d_pct'].sum() / abs(df_bt[df_bt['return_20d_pct'] < 0]['return_20d_pct'].sum()):.2f}"
-        if df_bt['return_20d_pct'].min() < 0 else "∞",
-    )
+    _max = df_bt['return_20d_pct'].max()
+    _min = df_bt['return_20d_pct'].min()
+    _std = df_bt['return_20d_pct'].std()
+    c5.metric("最大利益（20日）", f"{_max:.2f}%" if pd.notna(_max) else "N/A")
+    c6.metric("最大損失（20日）", f"{_min:.2f}%" if pd.notna(_min) else "N/A")
+    c7.metric("標準偏差（20日）", f"{_std:.2f}%" if pd.notna(_std) else "N/A")
+    _loss_sum = abs(df_bt[df_bt['return_20d_pct'] < 0]['return_20d_pct'].sum())
+    _gain_sum = df_bt[df_bt['return_20d_pct'] > 0]['return_20d_pct'].sum()
+    _pf = f"{_gain_sum / _loss_sum:.2f}" if _loss_sum > 0 else "∞"
+    c8.metric("プロフィットファクター", _pf)
 
     # チャート列
     col_left, col_right = st.columns(2)
