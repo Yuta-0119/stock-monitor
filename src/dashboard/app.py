@@ -231,10 +231,13 @@ def load_topix_history() -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL)
 def load_price_history(code: str) -> pd.DataFrame:
+    # daily_quotesは5桁コード形式（例: "16620"）
+    # holdingsは4桁コード（例: "1662"）→ 末尾に"0"を付加して検索
+    bq_code = code + "0" if len(code) == 4 and code.isdigit() else code
     return _bq(f"""
         SELECT date, open, high, low, close, volume, turnover_value
         FROM `onitsuka-app.stock_raw.daily_quotes`
-        WHERE code = '{code}'
+        WHERE code = '{bq_code}'
           AND date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 400 DAY)
         ORDER BY date ASC
     """)
@@ -743,11 +746,14 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
 
     # ─── 銘柄別チャート（国内株式のみ） ───
     st.markdown("### 銘柄別チャート")
-    domestic = df_holdings[
-        df_holdings.get("product_category", pd.Series(dtype=str)).str.contains("国内", na=False)
-        & df_holdings["code"].notna()
-        & (df_holdings["code"] != "")
-    ]
+    if "product_category" in df_holdings.columns:
+        domestic = df_holdings[
+            df_holdings["product_category"].str.contains("国内", na=False)
+            & df_holdings["code"].notna()
+            & (df_holdings["code"] != "")
+        ]
+    else:
+        domestic = df_holdings[df_holdings["code"].notna() & (df_holdings["code"] != "")]
     if domestic.empty:
         st.info("国内株式の保有銘柄がありません。")
     else:
