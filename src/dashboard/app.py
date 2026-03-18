@@ -2187,8 +2187,21 @@ def render_tab_actionboard(
             colorscale = [[0.0, "#313244"], [1.0, "#74c7ec"]]
 
         # ツリーマップ用データ（セクターノード + 銘柄ノード）
-        sectors = df_hm["sector33_name"].fillna("その他").unique().tolist()
-        ids, labels, parents, values, node_colors, customdata = [], [], [], [], [], []
+        df_hm["_sector"] = df_hm["sector33_name"].fillna("その他")
+        sectors = df_hm["_sector"].unique().tolist()
+
+        # セクター別の加重平均色を事前計算（売買代金加重）
+        sec_avg_color: dict[str, float] = {}
+        for _s in sectors:
+            _sg = df_hm[df_hm["_sector"] == _s]
+            _tw = _sg["_size"].sum()
+            sec_avg_color[_s] = (
+                (_sg["_color"] * _sg["_size"]).sum() / _tw
+                if _tw > 0 else _sg["_color"].mean()
+            )
+
+        ids, labels, parents, values, node_colors, customdata, font_sizes = \
+            [], [], [], [], [], [], []
 
         # セクターノード（親）
         for sec in sectors:
@@ -2196,8 +2209,9 @@ def render_tab_actionboard(
             labels.append(sec)
             parents.append("")
             values.append(0.0)
-            node_colors.append(0.0)
-            customdata.append(["", sec, "-", 0, 0, "-"])
+            node_colors.append(sec_avg_color.get(sec, 0.0))
+            customdata.append(["", "-", 0, 0, "-"])
+            font_sizes.append(11)
 
         # 銘柄ノード（子）
         for _, row in df_hm.iterrows():
@@ -2207,11 +2221,13 @@ def render_tab_actionboard(
             ksc   = int(_safe_num(row.get("kubota_trade_score")) or 0)
             gsc   = int(_safe_num(row.get("growth_invest_score")) or 0)
             close = _safe_num(row.get("latest_close"))
-            sec   = str(row.get("sector33_name") or "その他")
+            sec   = str(row.get("_sector", "その他"))
             size  = float(row.get("_size", 0.1))
 
+            # ラベル: 銘柄コード + 会社名（短縮）を2行で表示
+            short_name = name[:9] if len(name) > 9 else name
             ids.append(code)
-            labels.append(code)
+            labels.append(f"{code}<br>{short_name}")
             parents.append(f"__sec__{sec}")
             values.append(size)
             node_colors.append(float(row.get("_color", 0.0)))
@@ -2219,6 +2235,9 @@ def render_tab_actionboard(
                 name, sig, ksc, gsc,
                 f"¥{int(close):,}" if close else "-",
             ])
+            # フォントサイズ: 売買代金が大きいセルほど大きく
+            fs = 12 if size >= 50 else (10 if size >= 15 else (9 if size >= 4 else 8))
+            font_sizes.append(fs)
 
         fig_hm = go.Figure(go.Treemap(
             ids=ids,
@@ -2236,7 +2255,7 @@ def render_tab_actionboard(
             ),
             texttemplate="<b>%{label}</b>",
             hovertemplate=(
-                "<b>%{label}  %{customdata[0]}</b><br>"
+                "<b>%{customdata[0]}</b>  %{label}<br>"
                 "シグナル: %{customdata[1]}<br>"
                 "窪田スコア: %{customdata[2]}/10　　成長株: %{customdata[3]}/29<br>"
                 "現在値: %{customdata[4]}<br>"
@@ -2245,7 +2264,7 @@ def render_tab_actionboard(
             ),
             customdata=customdata,
             tiling=dict(packing="squarify", pad=2),
-            textfont=dict(color="#cdd6f4", size=9),
+            textfont=dict(color="#cdd6f4", size=font_sizes),
             pathbar=dict(
                 visible=True,
                 thickness=18,
