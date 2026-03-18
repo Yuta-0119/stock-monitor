@@ -2160,37 +2160,45 @@ def render_tab_actionboard(
         # 売買代金が欠損の場合は最小値（0.1億円）で補完
         df_hm["_size"] = df_hm["avg_turnover_20d_oku"].fillna(0.1).clip(lower=0.1)
 
-        # モード別に色の基準値を設定
+        # モード別カラー値・カラースケール設定
         if hmap_mode == "シグナル状態":
-            # 買いシグナル=10, 放れ待ち=4, その他=-3
             def _sig_num(sig: str) -> float:
-                if sig == "買いシグナル":
-                    return 10.0
-                if "放れ待ち" in str(sig):
-                    return 4.0
+                if sig == "買いシグナル":   return 10.0
+                if "放れ待ち" in str(sig):  return 4.0
                 return -3.0
             df_hm["_color"] = df_hm["kubota_signal"].apply(_sig_num)
             color_min, color_max = -3.0, 10.0
-            # -3→赤, 4→黄(約0.54), 10→緑
+            # -3(その他)→暗灰, 4(放れ待ち,pos≈0.538)→琥珀, 10(買いシグナル)→鮮緑
             colorscale = [
-                [0.00, "#f38ba8"],
-                [0.54, "#f9e2af"],
-                [1.00, "#a6e3a1"],
+                [0.00, "#1f2937"],
+                [0.35, "#374151"],
+                [0.54, "#b45309"],
+                [0.70, "#d97706"],
+                [0.85, "#16a34a"],
+                [1.00, "#15803d"],
             ]
         elif hmap_mode == "窪田スコア":
             df_hm["_color"] = df_hm["kubota_trade_score"].fillna(0).astype(float)
             color_min, color_max = 0.0, 10.0
-            colorscale = [[0.0, "#313244"], [1.0, "#a6e3a1"]]
+            colorscale = [
+                [0.00, "#111827"],
+                [0.40, "#374151"],
+                [0.70, "#166534"],
+                [1.00, "#16a34a"],
+            ]
         else:
             df_hm["_color"] = df_hm["growth_invest_score"].fillna(0).astype(float)
             color_min, color_max = 0.0, 29.0
-            colorscale = [[0.0, "#313244"], [1.0, "#74c7ec"]]
+            colorscale = [
+                [0.00, "#111827"],
+                [0.40, "#1e3a5f"],
+                [0.70, "#1d4ed8"],
+                [1.00, "#3b82f6"],
+            ]
 
-        # ツリーマップ用データ（セクターノード + 銘柄ノード）
+        # セクター別加重平均色（売買代金加重）
         df_hm["_sector"] = df_hm["sector33_name"].fillna("その他")
         sectors = df_hm["_sector"].unique().tolist()
-
-        # セクター別の加重平均色を事前計算（売買代金加重）
         sec_avg_color: dict[str, float] = {}
         for _s in sectors:
             _sg = df_hm[df_hm["_sector"] == _s]
@@ -2200,19 +2208,19 @@ def render_tab_actionboard(
                 if _tw > 0 else _sg["_color"].mean()
             )
 
-        ids, labels, text_items, parents, values, node_colors, customdata, font_sizes = \
-            [], [], [], [], [], [], [], []
+        ids, labels, parents, values, node_colors, customdata, font_sizes = \
+            [], [], [], [], [], [], []
 
         # セクターノード（親）
         for sec in sectors:
             ids.append(f"__sec__{sec}")
-            labels.append(sec)           # パスバー用: セクター名のみ
-            text_items.append(sec)       # セル表示: セクター名
+            labels.append(sec)
             parents.append("")
             values.append(0.0)
             node_colors.append(sec_avg_color.get(sec, 0.0))
+            # customdata[0]: セル2行目（セクターは空にして名前だけ表示）
             customdata.append(["", "-", 0, 0, "-"])
-            font_sizes.append(11)
+            font_sizes.append(12)
 
         # 銘柄ノード（子）
         for _, row in df_hm.iterrows():
@@ -2225,25 +2233,24 @@ def render_tab_actionboard(
             sec   = str(row.get("_sector", "その他"))
             size  = float(row.get("_size", 0.1))
 
-            short_name = name[:9] if len(name) > 9 else name
+            short_name = name[:10] if len(name) > 10 else name
             ids.append(code)
-            labels.append(code)                        # パスバー用: コードのみ（HTMLタグなし）
-            text_items.append(f"{code}<br>{short_name}")  # セル表示: コード + 会社名 2行
+            labels.append(code)                  # パスバー（パンくず）はコードのみ
             parents.append(f"__sec__{sec}")
             values.append(size)
             node_colors.append(float(row.get("_color", 0.0)))
+            # customdata[0] に会社名短縮 → texttemplate で2行目に表示
             customdata.append([
-                name, sig, ksc, gsc,
+                short_name, sig, ksc, gsc,
                 f"¥{int(close):,}" if close else "-",
             ])
             # フォントサイズ: 売買代金が大きいセルほど大きく
-            fs = 12 if size >= 50 else (10 if size >= 15 else (9 if size >= 4 else 8))
+            fs = 13 if size >= 50 else (11 if size >= 15 else (10 if size >= 4 else 9))
             font_sizes.append(fs)
 
         fig_hm = go.Figure(go.Treemap(
             ids=ids,
             labels=labels,
-            text=text_items,
             parents=parents,
             values=values,
             branchvalues="remainder",
@@ -2253,50 +2260,77 @@ def render_tab_actionboard(
                 cmin=color_min,
                 cmax=color_max,
                 showscale=False,
-                line=dict(width=1, color="#1e1e2e"),
+                # セクター境界は太線（pad=4 で親ノードとの隙間を確保）
+                line=dict(width=1, color="#0f172a"),
             ),
-            texttemplate="<b>%{text}</b>",
+            # ★ texttemplate内の<br>は正しくレンダリングされる（dataに<br>を入れない）
+            # 1行目: 銘柄コード（太字）、2行目: 会社名短縮
+            # セクターノードはcustomdata[0]=""のため1行表示になる
+            texttemplate="<b>%{label}</b><br>%{customdata[0]}",
+            textposition="middle center",
             hovertemplate=(
-                "<b>%{customdata[0]}</b>  (%{label})<br>"
+                "<b>%{customdata[0]}</b>（%{label}）<br>"
                 "シグナル: %{customdata[1]}<br>"
-                "窪田スコア: %{customdata[2]}/10　　成長株: %{customdata[3]}/29<br>"
+                "窪田スコア: %{customdata[2]}/10  成長株: %{customdata[3]}/29<br>"
                 "現在値: %{customdata[4]}<br>"
                 "売買代金(20日均): %{value:.1f}億円"
                 "<extra></extra>"
             ),
             customdata=customdata,
-            tiling=dict(packing="squarify", pad=2),
-            textfont=dict(color="#cdd6f4", size=font_sizes),
+            tiling=dict(packing="squarify", pad=4),
+            textfont=dict(color="#ffffff", size=font_sizes),
             pathbar=dict(
                 visible=True,
-                thickness=18,
-                textfont=dict(color="#cdd6f4", size=10),
+                thickness=20,
+                textfont=dict(color="#e2e8f0", size=11),
             ),
         ))
         fig_hm.update_layout(
-            height=600,
-            paper_bgcolor="#1e1e2e",
-            plot_bgcolor="#1e1e2e",
-            margin=dict(l=0, r=0, t=10, b=0),
+            height=680,
+            paper_bgcolor="#0f172a",
+            plot_bgcolor="#0f172a",
+            margin=dict(l=0, r=0, t=4, b=0),
         )
 
-        # 凡例
+        st.plotly_chart(fig_hm, use_container_width=True, config={"displayModeBar": False})
+
+        # 凡例（チャート直下）
         if hmap_mode == "シグナル状態":
             st.markdown(
-                "<span style='background:#a6e3a1;color:#1e1e2e;padding:2px 10px;border-radius:4px;"
-                "font-size:.82em;font-weight:700;margin-right:6px;'>■ 買いシグナル</span>"
-                "<span style='background:#f9e2af;color:#1e1e2e;padding:2px 10px;border-radius:4px;"
-                "font-size:.82em;margin-right:6px;'>■ 放れ待ち</span>"
-                "<span style='background:#585b70;color:#cdd6f4;padding:2px 10px;border-radius:4px;"
-                "font-size:.82em;'>■ その他</span>",
+                "<div style='display:flex;gap:10px;align-items:center;margin-top:4px;'>"
+                "<span style='background:#15803d;color:#fff;padding:3px 12px;border-radius:4px;"
+                "font-size:.82em;font-weight:700;'>■ 買いシグナル</span>"
+                "<span style='background:#d97706;color:#fff;padding:3px 12px;border-radius:4px;"
+                "font-size:.82em;font-weight:700;'>■ 放れ待ち</span>"
+                "<span style='background:#374151;color:#e2e8f0;padding:3px 12px;border-radius:4px;"
+                "font-size:.82em;'>■ その他</span>"
+                "<span style='color:#64748b;font-size:.78em;margin-left:6px;'>"
+                "セルサイズ = 20日平均売買代金 ／ セルをクリックでセクター内を拡大</span>"
+                "</div>",
                 unsafe_allow_html=True,
             )
         elif hmap_mode == "窪田スコア":
-            st.caption("暗色 = スコア低（0点）→ 明緑 = スコア高（10点）")
+            st.markdown(
+                "<div style='display:flex;gap:8px;align-items:center;margin-top:4px;'>"
+                "<span style='background:#111827;color:#9ca3af;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 0点</span>"
+                "<span style='background:#374151;color:#9ca3af;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 低</span>"
+                "<span style='background:#166534;color:#fff;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 中</span>"
+                "<span style='background:#16a34a;color:#fff;padding:3px 10px;border-radius:4px;font-size:.82em;font-weight:700;'>■ 高 (10点)</span>"
+                "<span style='color:#64748b;font-size:.78em;margin-left:6px;'>窪田スコア 0〜10点</span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
         else:
-            st.caption("暗色 = スコア低（0点）→ 明青緑 = スコア高（29点）")
-
-        st.plotly_chart(fig_hm, use_container_width=True)
+            st.markdown(
+                "<div style='display:flex;gap:8px;align-items:center;margin-top:4px;'>"
+                "<span style='background:#111827;color:#9ca3af;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 0点</span>"
+                "<span style='background:#1e3a5f;color:#9ca3af;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 低</span>"
+                "<span style='background:#1d4ed8;color:#fff;padding:3px 10px;border-radius:4px;font-size:.82em;'>■ 中</span>"
+                "<span style='background:#3b82f6;color:#fff;padding:3px 10px;border-radius:4px;font-size:.82em;font-weight:700;'>■ 高 (29点)</span>"
+                "<span style='color:#64748b;font-size:.78em;margin-left:6px;'>成長株スコア 0〜29点</span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # ─────────────────────────────────────────
