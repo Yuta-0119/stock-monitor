@@ -92,14 +92,16 @@ class BQLoader:
         on_clause = " AND ".join(
             [f"T.`{k}` = S.`{k}`" for k in merge_keys]
         )
-        update_cols = [c for c in df.columns if c not in merge_keys and c != "_ingested_at"]
-        update_clause = ", ".join([f"T.`{c}` = S.`{c}`" for c in update_cols])
-        if update_clause:
-            when_matched = f"UPDATE SET {update_clause}, T._ingested_at = CURRENT_TIMESTAMP()"
-        else:
-            when_matched = "UPDATE SET T._ingested_at = CURRENT_TIMESTAMP()"
+        update_cols = [c for c in df.columns if c not in merge_keys]
         insert_cols = ", ".join([f"`{c}`" for c in df.columns])
         insert_vals = ", ".join([f"S.`{c}`" for c in df.columns])
+
+        if update_cols:
+            update_clause = ", ".join([f"T.`{c}` = S.`{c}`" for c in update_cols])
+            when_matched = f"UPDATE SET {update_clause}"
+        else:
+            # 全カラムがmerge_keyの場合: 重複行は無視（自己代入で実質no-op）
+            when_matched = f"UPDATE SET T.`{merge_keys[0]}` = T.`{merge_keys[0]}`"
 
         merge_sql = f"""
         MERGE `{full_target}` T
@@ -108,8 +110,8 @@ class BQLoader:
         WHEN MATCHED THEN
           {when_matched}
         WHEN NOT MATCHED THEN
-          INSERT ({insert_cols}, _ingested_at)
-          VALUES ({insert_vals}, CURRENT_TIMESTAMP())
+          INSERT ({insert_cols})
+          VALUES ({insert_vals})
         """
 
         logger.info(f"Executing MERGE into {full_target}")
