@@ -2200,13 +2200,14 @@ def render_tab_actionboard(
                 if _tw > 0 else _sg["_color"].mean()
             )
 
-        ids, labels, parents, values, node_colors, customdata, font_sizes = \
-            [], [], [], [], [], [], []
+        ids, labels, text_items, parents, values, node_colors, customdata, font_sizes = \
+            [], [], [], [], [], [], [], []
 
         # セクターノード（親）
         for sec in sectors:
             ids.append(f"__sec__{sec}")
-            labels.append(sec)
+            labels.append(sec)           # パスバー用: セクター名のみ
+            text_items.append(sec)       # セル表示: セクター名
             parents.append("")
             values.append(0.0)
             node_colors.append(sec_avg_color.get(sec, 0.0))
@@ -2224,10 +2225,10 @@ def render_tab_actionboard(
             sec   = str(row.get("_sector", "その他"))
             size  = float(row.get("_size", 0.1))
 
-            # ラベル: 銘柄コード + 会社名（短縮）を2行で表示
             short_name = name[:9] if len(name) > 9 else name
             ids.append(code)
-            labels.append(f"{code}<br>{short_name}")
+            labels.append(code)                        # パスバー用: コードのみ（HTMLタグなし）
+            text_items.append(f"{code}<br>{short_name}")  # セル表示: コード + 会社名 2行
             parents.append(f"__sec__{sec}")
             values.append(size)
             node_colors.append(float(row.get("_color", 0.0)))
@@ -2242,6 +2243,7 @@ def render_tab_actionboard(
         fig_hm = go.Figure(go.Treemap(
             ids=ids,
             labels=labels,
+            text=text_items,
             parents=parents,
             values=values,
             branchvalues="remainder",
@@ -2253,9 +2255,9 @@ def render_tab_actionboard(
                 showscale=False,
                 line=dict(width=1, color="#1e1e2e"),
             ),
-            texttemplate="<b>%{label}</b>",
+            texttemplate="<b>%{text}</b>",
             hovertemplate=(
-                "<b>%{customdata[0]}</b>  %{label}<br>"
+                "<b>%{customdata[0]}</b>  (%{label})<br>"
                 "シグナル: %{customdata[1]}<br>"
                 "窪田スコア: %{customdata[2]}/10　　成長株: %{customdata[3]}/29<br>"
                 "現在値: %{customdata[4]}<br>"
