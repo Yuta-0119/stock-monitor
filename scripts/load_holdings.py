@@ -145,6 +145,11 @@ def parse_transactions(raw_data: list[list[str]]) -> pd.DataFrame:
     header = raw_data[0]
     rows = raw_data[1:]
 
+    # デバッグ: ヘッダーと最初の3行を表示
+    print(f"  [DEBUG] ヘッダー: {header}")
+    for _di, _dr in enumerate(rows[:5], start=2):
+        print(f"  [DEBUG] 行{_di}: {_dr}")
+
     records = []
     for i, row in enumerate(rows, start=2):
         # 空行スキップ
