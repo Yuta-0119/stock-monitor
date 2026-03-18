@@ -671,6 +671,37 @@ def _holding_action(row) -> str:
     return "📊 様子見"
 
 
+def _calc_stop_loss(
+    purchase_price, close, atr_pct=None, method: str = "-8%固定"
+) -> tuple:
+    """損切り価格・損切りまでの余裕%・ステータスを計算
+
+    Returns: (sl_price, distance_pct, status)
+    status: "BREACHED" | "CRITICAL" | "WARNING" | "SAFE" | "UNKNOWN"
+    """
+    pp = _safe_num(purchase_price)
+    cl = _safe_num(close)
+    if pp is None or cl is None:
+        return None, None, "UNKNOWN"
+    atr = _safe_num(atr_pct)
+    if method == "ATR×2（動的）" and atr is not None and atr > 0:
+        sl_price = cl * (1 - atr / 100 * 2)
+    else:
+        sl_price = pp * 0.92  # -8%固定
+    if sl_price <= 0:
+        return sl_price, None, "UNKNOWN"
+    distance_pct = (cl - sl_price) / sl_price * 100
+    if cl <= sl_price:
+        status = "BREACHED"
+    elif distance_pct <= 3:
+        status = "CRITICAL"
+    elif distance_pct <= 7:
+        status = "WARNING"
+    else:
+        status = "SAFE"
+    return sl_price, distance_pct, status
+
+
 def render_tab_holdings(df_holdings: pd.DataFrame):
     """Tab 0: 💼 保有銘柄管理"""
     st.subheader("💼 保有銘柄管理")
@@ -871,6 +902,115 @@ def render_tab_holdings(df_holdings: pd.DataFrame):
         height=min(600, (len(df_table) + 3) * 38),
         column_config=col_config,
     )
+
+    st.divider()
+
+    # ─── 損切りルール管理 ───
+    st.markdown("### 🚨 損切りルール管理")
+    st.caption("保有中の国内株に対し、損切りラインと現在値の余裕を可視化します。")
+
+    if "product_category" in df_holdings.columns:
+        domestic_sl = df_holdings[
+            df_holdings["product_category"].str.contains("国内", na=False)
+            & df_holdings["purchase_price"].notna()
+            & df_holdings["latest_close"].notna()
+        ].copy()
+    else:
+        domestic_sl = df_holdings[
+            df_holdings["purchase_price"].notna()
+            & df_holdings["latest_close"].notna()
+        ].copy()
+
+    if domestic_sl.empty:
+        st.info("損切りルールを適用できる国内株がありません。")
+    else:
+        has_atr = "atr_pct" in domestic_sl.columns and domestic_sl["atr_pct"].notna().any()
+        method_opts = ["ATR×2（動的）", "-8%固定"] if has_atr else ["-8%固定"]
+        sl_method = st.radio(
+            "損切りルール",
+            method_opts,
+            horizontal=True,
+            key="sl_method_radio",
+            help="ATR×2（動的）: 現在値から ATR の2倍幅に損切りライン設定。-8%固定: 取得単価の92%。",
+        )
+        if sl_method == "ATR×2（動的）":
+            st.caption("損切りライン = 現在値 × (1 − ATR% × 2)　　ライン割込みで🛑アラート")
+        else:
+            st.caption("損切りライン = 取得単価 × 0.92（−8%）　　ライン割込みで🛑アラート")
+
+        STATUS_STYLE = {
+            "BREACHED": ("#f38ba8", "🛑", "損切りライン割込"),
+            "CRITICAL": ("#fab387", "🔴", "ライン接近（3%未満）"),
+            "WARNING":  ("#f9e2af", "⚠️", "要注意（7%未満）"),
+            "SAFE":     ("#a6e3a1", "✅", "安全圏"),
+            "UNKNOWN":  ("#6c7086", "—",  "データ不足"),
+        }
+
+        rows_html = ""
+        for _, row in domestic_sl.iterrows():
+            code_v  = str(row.get("code", ""))
+            name_v  = str(row.get("company_name", ""))[:14]
+            pp_v    = _safe_num(row.get("purchase_price"))
+            cl_v    = _safe_num(row.get("latest_close"))
+            atr_v   = _safe_num(row.get("atr_pct"))
+            ret_v   = _safe_num(row.get("return_pct"))
+
+            sl_price, dist_pct, status = _calc_stop_loss(pp_v, cl_v, atr_v, sl_method)
+            color, icon, label = STATUS_STYLE.get(status, STATUS_STYLE["UNKNOWN"])
+
+            pp_disp   = f"¥{int(pp_v):,}"     if pp_v    else "—"
+            cl_disp   = f"¥{int(cl_v):,}"     if cl_v    else "—"
+            sl_disp   = f"¥{int(sl_price):,}" if sl_price else "—"
+            ret_color = "#f38ba8" if (ret_v or 0) < 0 else "#a6e3a1"
+            ret_disp  = f"{ret_v:+.1f}%"       if ret_v is not None else "—"
+
+            if dist_pct is not None:
+                gauge_fill   = min(max(dist_pct, 0), 20) / 20 * 100
+                gauge_color  = (
+                    "#f38ba8" if dist_pct <= 0 else
+                    "#fab387" if dist_pct <= 3 else
+                    "#f9e2af" if dist_pct <= 7 else
+                    "#a6e3a1"
+                )
+                dist_disp  = f"{dist_pct:+.1f}%"
+                gauge_html = (
+                    f'<div style="background:#1e1e2e;border-radius:3px;height:5px;margin-top:4px;">'
+                    f'<div style="width:{gauge_fill:.0f}%;background:{gauge_color};height:5px;'
+                    f'border-radius:3px;"></div></div>'
+                )
+            else:
+                dist_disp = "—"
+                gauge_color = "#6c7086"
+                gauge_html = ""
+
+            rows_html += f"""
+<div style="display:flex;align-items:center;gap:14px;padding:10px 14px;
+            border:1px solid {color}33;border-left:3px solid {color};
+            border-radius:8px;margin-bottom:6px;background:{color}0a;">
+  <div style="min-width:150px;">
+    <div style="font-weight:700;color:#cdd6f4;font-size:.95em;">{code_v}&nbsp;&nbsp;{name_v}</div>
+    <div style="font-size:.78em;color:#6c7086;margin-top:2px;">取得: {pp_disp} &nbsp;／&nbsp; 現在: {cl_disp}</div>
+  </div>
+  <div style="min-width:90px;text-align:center;">
+    <div style="font-size:.75em;color:#6c7086;">損切ライン</div>
+    <div style="font-weight:700;color:#f38ba8;font-size:.95em;">{sl_disp}</div>
+  </div>
+  <div style="min-width:90px;flex:1;">
+    <div style="font-size:.75em;color:#6c7086;">ラインまでの余裕</div>
+    <div style="font-weight:700;color:{gauge_color};font-size:.95em;">{dist_disp}</div>
+    {gauge_html}
+  </div>
+  <div style="min-width:60px;text-align:center;">
+    <div style="font-size:.75em;color:#6c7086;">含み損益</div>
+    <div style="font-size:.9em;font-weight:600;color:{ret_color};">{ret_disp}</div>
+  </div>
+  <div style="text-align:right;min-width:130px;">
+    <span style="background:{color}22;color:{color};border-radius:5px;
+                 padding:3px 9px;font-size:.82em;font-weight:700;">{icon}&nbsp;{label}</span>
+  </div>
+</div>"""
+
+        st.markdown(rows_html, unsafe_allow_html=True)
 
     st.divider()
 
@@ -2005,21 +2145,43 @@ def render_tab_actionboard(
                 cat    = str(row.get("product_category", ""))
 
                 price_disp = f"¥{int(close):,}" if close else ""
-                if ret is not None and ret <= -8:
-                    alerts.append(("🛑", "損切り検討", "#f38ba8", code, name, cat,
-                                   f"含み損 {ret:+.1f}% — 損切りラインを超過しています", price_disp, pnl, 0))
+                pp_val  = _safe_num(row.get("purchase_price"))
+                atr_p   = _safe_num(row.get("atr_pct"))
+
+                # ATRベース動的損切りチェック（国内株のみ・atr_pct がある場合）
+                _, atr_dist, atr_status = _calc_stop_loss(pp_val, close, atr_p, "ATR×2（動的）")
+                _, fix_dist, fix_status = _calc_stop_loss(pp_val, close, None,  "-8%固定")
+
+                # 最も深刻なステータスを採用（ATR優先、なければ固定%）
+                use_atr = (atr_p is not None and atr_dist is not None)
+                eff_status = atr_status if use_atr else fix_status
+                eff_dist   = atr_dist  if use_atr else fix_dist
+
+                if eff_status == "BREACHED":
+                    method_lbl = f"ATR×2ライン割込" if use_atr else "損切り検討（−8%）"
+                    dist_info  = f"余裕 {eff_dist:+.1f}% " if eff_dist is not None else ""
+                    alerts.append(("🛑", method_lbl, "#f38ba8", code, name, cat,
+                                   f"含み損 {ret:+.1f}% — 損切りラインを割り込んでいます　{dist_info}",
+                                   price_disp, pnl, 0))
+                elif eff_status == "CRITICAL":
+                    dist_info = f"余裕 {eff_dist:+.1f}%" if eff_dist is not None else ""
+                    alerts.append(("🔴", "損切りライン接近", "#fab387", code, name, cat,
+                                   f"含み損 {ret:+.1f}% — 損切りライン3%未満　{dist_info}",
+                                   price_disp, pnl, 1))
                 elif ret is not None and ret >= 20:
                     alerts.append(("💰", "利確検討", "#a6e3a1", code, name, cat,
-                                   f"含み益 {ret:+.1f}% — 目標利益に到達しています", price_disp, pnl, 1))
+                                   f"含み益 {ret:+.1f}% — 目標利益に到達しています", price_disp, pnl, 2))
                 elif earn is not None and earn <= 7:
                     alerts.append(("📅", "決算直前", "#f38ba8", code, name, cat,
-                                   f"決算まで {int(earn)} 日 — 急激な値動きに注意", price_disp, pnl, 2))
+                                   f"決算まで {int(earn)} 日 — 急激な値動きに注意", price_disp, pnl, 3))
                 elif earn is not None and earn <= 14:
                     alerts.append(("📅", "決算前注意", "#fab387", code, name, cat,
-                                   f"決算まで {int(earn)} 日 — ポジション縮小を検討", price_disp, pnl, 3))
-                elif ret is not None and ret <= -5:
+                                   f"決算まで {int(earn)} 日 — ポジション縮小を検討", price_disp, pnl, 4))
+                elif eff_status == "WARNING":
+                    dist_info = f"余裕 {eff_dist:+.1f}%" if eff_dist is not None else ""
                     alerts.append(("⚠️", "含み損注意", "#fab387", code, name, cat,
-                                   f"含み損 {ret:+.1f}% — 損切りライン接近", price_disp, pnl, 4))
+                                   f"含み損 {ret:+.1f}% — 損切りライン7%未満　{dist_info}",
+                                   price_disp, pnl, 5))
 
             # 優先度順にソート
             alerts.sort(key=lambda x: x[9])
@@ -2381,6 +2543,23 @@ def main():
             df_holdings = load_holdings()
         except Exception:
             df_holdings = pd.DataFrame()
+
+        # atr_pct を df_screening から df_holdings にマージ（国内株の動的損切り計算用）
+        # df_screening のコードは5桁（例: "72030"）、df_holdings は4桁（例: "7203"）
+        if (
+            not df_holdings.empty
+            and not df_screening.empty
+            and "code" in df_holdings.columns
+            and "atr_pct" in df_screening.columns
+            and "atr_pct" not in df_holdings.columns
+        ):
+            _atr_map = (
+                df_screening[["code", "atr_pct"]].copy()
+                .assign(code4=lambda d: d["code"].astype(str).str[:4])
+                .groupby("code4", as_index=False)["atr_pct"].mean()
+                .rename(columns={"code4": "code"})
+            )
+            df_holdings = df_holdings.merge(_atr_map, on="code", how="left")
 
     # 評価額合計（円→万円）をサイドバー用に計算
     total_current_value_man = 0
