@@ -30,6 +30,7 @@ import os
 
 import pandas as pd
 import gspread
+import google.auth
 from google.oauth2 import service_account
 from google.cloud import bigquery
 
@@ -49,8 +50,23 @@ SCOPES = [
 ]
 
 # sa-key.json はスクリプトの親ディレクトリ（プロジェクトルート）にある
+# GitHub Actions では GOOGLE_APPLICATION_CREDENTIALS が設定されるため ADC を使用
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SA_KEY_PATH = os.path.join(SCRIPT_DIR, "..", "sa-key.json")
+
+
+def _get_credentials(scopes=None):
+    """認証情報を取得する。
+    ローカル: sa-key.json が存在すればそれを使用
+    CI (GitHub Actions): GOOGLE_APPLICATION_CREDENTIALS 経由の ADC を使用
+    """
+    if os.path.exists(SA_KEY_PATH):
+        if scopes:
+            return service_account.Credentials.from_service_account_file(SA_KEY_PATH, scopes=scopes)
+        return service_account.Credentials.from_service_account_file(SA_KEY_PATH)
+    # Application Default Credentials (GitHub Actions / gcloud auth)
+    creds, _ = google.auth.default(scopes=scopes)
+    return creds
 
 
 def _parse_amount(val: str) -> float | None:
@@ -112,7 +128,7 @@ def _parse_security(val: str):
 def read_sheet_data() -> list[list[str]]:
     """Google Sheetsから生データを読み込む"""
     print(f"Google Sheets 読み込み中: {SPREADSHEET_ID} / {WORKSHEET_NAME}")
-    creds = service_account.Credentials.from_service_account_file(SA_KEY_PATH, scopes=SCOPES)
+    creds = _get_credentials(scopes=SCOPES)
     gc = gspread.authorize(creds)
     ss = gc.open_by_key(SPREADSHEET_ID)
     ws = ss.worksheet(WORKSHEET_NAME)
@@ -246,7 +262,7 @@ def load_to_bigquery(df: pd.DataFrame) -> None:
     """DataFrame を BigQuery テーブル onitsuka-app.analytics.holdings にロード"""
     print(f"\nBigQuery ロード中: {BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}")
 
-    creds = service_account.Credentials.from_service_account_file(SA_KEY_PATH)
+    creds = _get_credentials()
     client = bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
 
     # テーブルスキーマ
@@ -313,7 +329,7 @@ def main():
     load_to_bigquery(df_holdings)
 
     # 5. 検証
-    creds = service_account.Credentials.from_service_account_file(SA_KEY_PATH)
+    creds = _get_credentials()
     client = bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
     verify_bq(client)
 
