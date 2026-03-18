@@ -1,21 +1,21 @@
 """
 保有銘柄データをGoogle Sheetsから読み込み、BigQueryにロードするスクリプト。
 
-Google Sheets「保有銘柄」タブの列構成:
-  A: 約定日/受領日
-  B: 約定日
-  C: 受渡日
-  D: 取引 (購入/売却)
-  E: 商品 (国内株式/米国株式/投資信託)
-  F: 銘柄 ("会社名\nコード" の形式)
-  G: 口座区分
-  H: 数量 ("100株", "5,949口", "1株" など)
-  I: 受渡金額（換算） ("¥104,600" など)
+Google Sheets「保有銘柄」タブの列構成（現行フォーマット）:
+  A(0): 商品カテゴリ  (国内株/米国株/投資信託)
+  B(1): 約定日        ("2026/1/23" 形式)
+  C(2): 受渡日
+  D(3): 銘柄・ファンド名
+  E(4): 銘柄コード・ティッカー
+  F(5): 口座          (NISA成長投資枠/NISAつみたて投資枠 等)
+  G(6): 売買区分      (買付/売却)
+  H(7): 数量          (数値のみ)
+  I(8): 単価          (数値のみ、現地通貨)
 
 処理:
-  - 購入取引のみ対象
-  - 銘柄コードと会社名をF列から抽出
-  - 数量・金額をパース
+  - 買付取引のみ対象（G列 == "買付"）
+  - 商品カテゴリを BigQuery スキーマ用名称に変換
+  - purchase_amount = 数量 × 単価（現地通貨。為替変換はしない）
   - 銘柄コードごとに集計（総株数・VWAP取得単価・最初の購入日・合計金額）
   - BigQuery テーブル onitsuka-app.analytics.holdings へ WRITE_TRUNCATE でロード
 
@@ -138,17 +138,25 @@ def read_sheet_data() -> list[list[str]]:
 
 
 def parse_transactions(raw_data: list[list[str]]) -> pd.DataFrame:
-    """生データをトランザクション DataFrame に変換"""
+    """生データをトランザクション DataFrame に変換（現行フォーマット対応）
+
+    列マッピング:
+      A(0): 商品カテゴリ  B(1): 約定日  C(2): 受渡日
+      D(3): 銘柄名        E(4): コード  F(5): 口座
+      G(6): 売買区分      H(7): 数量    I(8): 単価
+    """
     if not raw_data:
         return pd.DataFrame()
 
     header = raw_data[0]
     rows = raw_data[1:]
 
-    # デバッグ: ヘッダーと最初の3行を表示
-    print(f"  [DEBUG] ヘッダー: {header}")
-    for _di, _dr in enumerate(rows[:5], start=2):
-        print(f"  [DEBUG] 行{_di}: {_dr}")
+    # 商品カテゴリ → BigQuery スキーマ名への変換
+    CATEGORY_MAP = {
+        "国内株": "国内株式",
+        "米国株": "米国株式",
+        "投資信託": "投資信託",
+    }
 
     records = []
     for i, row in enumerate(rows, start=2):
@@ -156,37 +164,40 @@ def parse_transactions(raw_data: list[list[str]]) -> pd.DataFrame:
         if not row or all(not str(c).strip() for c in row):
             continue
 
-        # 行を9列に揃える（末尾不足を空文字で補完）
+        # 行を9列に揃える
         row = list(row) + [""] * (9 - len(row))
 
-        trade_type = str(row[3]).strip()  # D列: 取引
-        product_type = str(row[4]).strip()  # E列: 商品
+        trade_type = str(row[6]).strip()   # G列: 売買区分（買付/売却）
 
-        # 購入取引のみ処理（売却は除外）
-        if trade_type != "購入":
+        # 買付取引のみ処理
+        if trade_type != "買付":
             continue
 
-        # 約定日をパース（B列）
+        # 約定日をパース（B列: "2026/1/23" 形式）
         trade_date_str = str(row[1]).strip()
         try:
             trade_date = datetime.date.fromisoformat(trade_date_str.replace("/", "-"))
         except ValueError:
-            # "2026/03/16" 形式の場合
             try:
                 trade_date = datetime.datetime.strptime(trade_date_str, "%Y/%m/%d").date()
             except ValueError:
                 print(f"  行{i}: 日付パース失敗 '{trade_date_str}'、スキップ")
                 continue
 
-        company_name, code = _parse_security(row[5])  # F列: 銘柄
-        quantity = _parse_quantity(row[7])  # H列: 数量
-        amount = _parse_amount(row[8])      # I列: 受渡金額
+        raw_category = str(row[0]).strip()         # A列: 商品カテゴリ
+        product_type = CATEGORY_MAP.get(raw_category, raw_category)
+        company_name = str(row[3]).strip()         # D列: 銘柄・ファンド名
+        code = str(row[4]).strip() or None         # E列: 銘柄コード・ティッカー
+        account_type = str(row[5]).strip()         # F列: 口座
 
-        if company_name is None:
+        if not company_name:
             continue
 
-        # 口座区分
-        account_type = str(row[6]).strip()  # G列
+        quantity = _parse_quantity(row[7])         # H列: 数量（"10" など）
+        unit_price = _parse_amount(row[8])         # I列: 単価（"1900" など）
+
+        # purchase_amount = 数量 × 単価（現地通貨）
+        amount = (quantity * unit_price) if (quantity and unit_price) else None
 
         records.append({
             "trade_date": trade_date,
@@ -199,7 +210,7 @@ def parse_transactions(raw_data: list[list[str]]) -> pd.DataFrame:
         })
 
     df = pd.DataFrame(records)
-    print(f"  購入トランザクション: {len(df)} 件")
+    print(f"  買付トランザクション: {len(df)} 件")
     return df
 
 
