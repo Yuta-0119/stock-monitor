@@ -97,7 +97,7 @@ SELECT
   -- 投資信託: total_shares=万口, price_jpy=円/万口 → 万口 × 円/万口 = 円（直接計算可能）
   -- 米国株・国内株: total_shares=株数, price=円/株 → そのまま
   CASE
-    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_type = '投資信託'
       THEN ROUND(aj.total_shares * ep_fund.price_jpy, 0)
     WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
       THEN ROUND(aj.total_shares * COALESCE(sc.latest_close, ep_us.price_jpy), 0)
@@ -107,7 +107,7 @@ SELECT
   -- ★ 含み損益（円）
   -- 投資信託: (現在値円/万口 - 取得単価円/万口) × 保有万口 = 含み損益円
   CASE
-    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_type = '投資信託'
       AND aj.total_cost IS NOT NULL
       THEN ROUND(aj.total_shares * ep_fund.price_jpy - aj.total_cost, 0)
     WHEN COALESCE(sc.latest_close, ep_us.price_jpy) IS NOT NULL
@@ -118,7 +118,7 @@ SELECT
 
   -- ★ 損益率（%）
   CASE
-    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_category = '投資信託'
+    WHEN ep_fund.price_jpy IS NOT NULL AND aj.product_type = '投資信託'
       AND aj.total_cost > 0
       THEN ROUND(
         SAFE_DIVIDE(aj.total_shares * ep_fund.price_jpy - aj.total_cost, aj.total_cost) * 100, 2
