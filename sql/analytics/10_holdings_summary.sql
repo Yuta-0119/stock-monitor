@@ -21,27 +21,28 @@ fx AS (
   WHERE usdjpy_rate IS NOT NULL
 ),
 
--- ─── 銘柄ごとに集計（買付のみ）────────────────────────────
+-- ─── 銘柄ごとに集計（全行が買付済み）────────────────────────────
+-- analytics.holdings は load_holdings.py が買付のみを書き込む（trade_type カラムなし）
+-- product_type / account_type が正式カラム名（旧名 product_category / account は廃止）
 -- 投資信託の保有単位: 口数を万口に変換（SBI証券の標準表示に合わせる）
 -- 万口単位にすることで (現在値円/万口 - 取得単価円/万口) × 保有万口 = 含み損益円 が成立する
 agg AS (
   SELECT
-    product_category,
+    product_type,
     company_name,
     code,
-    account,
+    account_type,
     CASE
-      WHEN product_category = '投資信託'
+      WHEN product_type = '投資信託'
       THEN ROUND(SUM(shares) / 10000.0, 4)  -- 口 → 万口
       ELSE SUM(shares)
     END                                                    AS total_shares,     -- 投資信託:万口 / それ以外:株数
     SUM(purchase_amount)                                   AS total_cost_orig,  -- 元通貨建て取得金額
     SAFE_DIVIDE(SUM(purchase_amount), SUM(shares))         AS avg_cost_orig,    -- 元通貨建て平均取得単価（投資信託:円/万口）
-    MIN(order_date)                                        AS first_buy_date,
-    MAX(order_date)                                        AS last_buy_date
+    MIN(purchase_date)                                     AS first_buy_date,
+    MAX(latest_purchase_date)                              AS last_buy_date
   FROM `onitsuka-app.analytics.holdings`
-  WHERE trade_type = '買付'
-  GROUP BY product_category, company_name, code, account
+  GROUP BY product_type, company_name, code, account_type
 ),
 
 -- ─── 取得金額を JPY 統一（米国株: USDJPY 換算 / 投資信託: /10000 補正）──────────
@@ -52,16 +53,16 @@ agg_jpy AS (
   SELECT
     a.*,
     CASE
-      WHEN a.product_category = '米国株'
+      WHEN a.product_type = '米国株'
         THEN ROUND(a.total_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
-      WHEN a.product_category = '投資信託'
+      WHEN a.product_type = '投資信託'
         THEN ROUND(a.total_cost_orig / 10000.0, 0)  -- 円/万口 → 実円換算
       ELSE a.total_cost_orig
     END AS total_cost,
     CASE
-      WHEN a.product_category = '米国株'
+      WHEN a.product_type = '米国株'
         THEN ROUND(a.avg_cost_orig * COALESCE(fx.usdjpy_rate, 150), 0)
-      WHEN a.product_category = '投資信託'
+      WHEN a.product_type = '投資信託'
         THEN a.avg_cost_orig  -- 円/万口 のまま（latest_close と同単位で比較可能）
       ELSE a.avg_cost_orig
     END AS avg_cost_per_share,
@@ -71,10 +72,10 @@ agg_jpy AS (
 )
 
 SELECT
-  aj.product_category,
+  aj.product_type        AS product_category,  -- app.py との互換性維持
   aj.company_name,
   aj.code,
-  aj.account,
+  aj.account_type        AS account,           -- app.py との互換性維持
   aj.total_shares,
   aj.total_cost                                             AS total_cost,
   aj.avg_cost_per_share,
@@ -138,16 +139,16 @@ FROM agg_jpy aj
 -- 国内株: integrated_score（5桁コード → 先頭4桁 = holdings.code）
 LEFT JOIN `onitsuka-app.analytics.integrated_score` sc
   ON LEFT(sc.code, 4) = aj.code
-  AND aj.product_category = '国内株'
+  AND aj.product_type = '国内株'
 
 -- 米国株: external_prices（ticker = holdings.code: "GOOGL", "TSLA" 等）
 LEFT JOIN `onitsuka-app.analytics.external_prices` ep_us
   ON ep_us.ticker = aj.code
-  AND aj.product_category = '米国株'
+  AND aj.product_type = '米国株'
   AND ep_us.asset_type = '米国株'
 
 -- 投資信託: external_prices（asset_name = holdings.company_name）
 LEFT JOIN `onitsuka-app.analytics.external_prices` ep_fund
   ON ep_fund.asset_name = aj.company_name
-  AND aj.product_category = '投資信託'
+  AND aj.product_type = '投資信託'
   AND ep_fund.asset_type = '投資信託';
