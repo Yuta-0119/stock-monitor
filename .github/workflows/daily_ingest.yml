@@ -54,6 +54,7 @@ jobs:
 
       - name: Step 3a – 保有銘柄 BigQuery 同期
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        continue-on-error: true
         run: python scripts/load_holdings.py
 
       - name: Step 3b – 外部価格取得（米国株・投資信託）

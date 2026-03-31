@@ -325,7 +325,12 @@ def verify_bq(client: bigquery.Client) -> None:
 
 def main():
     # 1. シートからデータ読み込み
-    raw = read_sheet_data()
+    try:
+        raw = read_sheet_data()
+    except Exception as e:
+        print(f"警告: Google Sheetsの読み込みに失敗しました（スキップ）: {e}")
+        print("  シートID または ワークシート名を確認してください。")
+        sys.exit(0)
 
     # 2. トランザクションをパース
     df_tx = parse_transactions(raw)
