@@ -52,6 +52,10 @@ jobs:
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode analytics
 
+      - name: Step 2b – ダッシュボードキャッシュ更新
+        if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        run: python scripts/refresh_cache.py
+
       - name: Step 3a – 保有銘柄 BigQuery 同期
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         continue-on-error: true
