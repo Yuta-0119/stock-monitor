@@ -1,26 +1,15 @@
 """
 保有銘柄データをGoogle Sheetsから読み込み、BigQueryにロードするスクリプト。
 
-Google Sheets「保有銘柄」タブの列構成（現行フォーマット）:
-  A(0): 商品カテゴリ  (国内株/米国株/投資信託)
-  B(1): 約定日        ("2026/1/23" 形式)
-  C(2): 受渡日
-  D(3): 銘柄・ファンド名
-  E(4): 銘柄コード・ティッカー
-  F(5): 口座          (NISA成長投資枠/NISAつみたて投資枠 等)
-  G(6): 売買区分      (買付/売却)
-  H(7): 数量          (数値のみ)
-  I(8): 単価          (数値のみ、現地通貨)
+タブ別シート構造（共通: 1行=更新日ラベル, 2行=日付+URL, 3行=ヘッダー, 4行以降=データ）:
+  - 国内株式: 銘柄コード(C) / 銘柄名(D) / 口座区分(F) / 売買区分(H) / 数量[株](K) / 単価[円](L)
+  - 米国株式: ティッカー(C) / 銘柄名(D) / 口座(E) / 売買区分(G) / 数量[株](K) / 単価[USドル](L) / 為替レート(N)
+  - 投資信託: ファンド名(C) / 口座(E) / 取引(F) / 数量[口](H) / 単価(I) / 受渡金額(M)
 
 処理:
-  - 買付取引のみ対象（G列 == "買付"）
-  - 商品カテゴリを BigQuery スキーマ用名称に変換
-  - purchase_amount = 数量 × 単価（現地通貨。為替変換はしない）
-  - 銘柄コードごとに集計（総株数・VWAP取得単価・最初の購入日・合計金額）
+  - 買付取引のみ対象
+  - 銘柄コード（または銘柄名）ごとに集計（総株数・VWAP取得単価・最初/最新購入日・合計金額）
   - BigQuery テーブル onitsuka-app.analytics.holdings へ WRITE_TRUNCATE でロード
-
-実行方法:
-  .venv\\Scripts\\python scripts/load_holdings.py
 """
 
 import re
@@ -36,12 +25,12 @@ from google.cloud import bigquery
 
 # ─── 設定 ───────────────────────────────────────────────
 SPREADSHEET_ID = "1NHwYw9EeFApinVMfvEBrJm39WislzgL9h76U9I3RTuo"
-WORKSHEET_NAME = "保有銘柄"
-RANGE = "A1:I200"  # 余裕を持って200行まで読む
+HEADER_ROW_IDX = 2   # 0-indexed: 行3がヘッダー
+DATA_START_IDX = 3   # 0-indexed: 行4からデータ
 
-BQ_PROJECT = "onitsuka-app"
-BQ_DATASET = "analytics"
-BQ_TABLE = "holdings"
+BQ_PROJECT  = "onitsuka-app"
+BQ_DATASET  = "analytics"
+BQ_TABLE    = "holdings"
 BQ_LOCATION = "asia-northeast1"
 
 SCOPES = [
@@ -49,311 +38,353 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# sa-key.json はスクリプトの親ディレクトリ（プロジェクトルート）にある
-# GitHub Actions では GOOGLE_APPLICATION_CREDENTIALS が設定されるため ADC を使用
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SA_KEY_PATH = os.path.join(SCRIPT_DIR, "..", "sa-key.json")
 
 
+# ─── 認証 ───────────────────────────────────────────────
+
 def _get_credentials(scopes=None):
-    """認証情報を取得する。
-    ローカル: sa-key.json が存在すればそれを使用
-    CI (GitHub Actions): GOOGLE_APPLICATION_CREDENTIALS 経由の ADC を使用
-    """
     if os.path.exists(SA_KEY_PATH):
         if scopes:
             return service_account.Credentials.from_service_account_file(SA_KEY_PATH, scopes=scopes)
         return service_account.Credentials.from_service_account_file(SA_KEY_PATH)
-    # Application Default Credentials (GitHub Actions / gcloud auth)
     creds, _ = google.auth.default(scopes=scopes)
     return creds
 
 
-def _parse_amount(val: str) -> float | None:
-    """'¥104,600' → 104600.0, 空文字/Noneはそのまま None を返す"""
-    if not val or not str(val).strip():
+# ─── ユーティリティ ────────────────────────────────────
+
+def _parse_number(val) -> float | None:
+    """'1,900.00' / '¥104,600' / '5,299口' などを float に変換"""
+    if not val or not str(val).strip() or str(val).strip() in ("-", ""):
         return None
-    cleaned = re.sub(r"[¥,\s]", "", str(val))
+    cleaned = re.sub(r"[¥$,\s口株]", "", str(val))
     try:
         return float(cleaned)
     except ValueError:
         return None
 
 
-def _parse_quantity(val: str) -> float | None:
-    """
-    '100株' → 100.0
-    '5,949口' → 5949.0
-    '1株' → 1.0
-    '10.5株' → 10.5
-    """
-    if not val or not str(val).strip():
-        return None
-    cleaned = re.sub(r"[株口,\s]", "", str(val))
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
+def _parse_date(val: str) -> datetime.date | None:
+    val = str(val).strip()
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.datetime.strptime(val, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
-def _parse_security(val: str):
-    """
-    F列 '会社名\nコード' をパースして (company_name, code) を返す。
-    国内株式: コードは4-5桁の数字
-    米国株式: コードは英字ティッカー (TSLA, GOOGL など)
-    投資信託: コード相当の文字列がない場合は company_name のみ
-    """
-    parts = [p.strip() for p in str(val).split("\n") if p.strip()]
-    if len(parts) == 0:
-        return None, None
-    if len(parts) == 1:
-        # コードなし（投資信託の一部）
-        return parts[0], None
-
-    company_name = parts[0]
-    code_candidate = parts[1]
-
-    # 日本株コード: 4-5桁の数字
-    if re.match(r"^\d{4,5}$", code_candidate):
-        return company_name, code_candidate
-
-    # 米国株ティッカー: 大文字英字
-    if re.match(r"^[A-Z]{1,5}$", code_candidate):
-        return company_name, code_candidate
-
-    # それ以外（"再投資型" など）はコードなし
-    return company_name, None
+def _find_col(headers: list[str], keyword: str) -> int | None:
+    """ヘッダー行からキーワードを含む最初の列インデックスを返す"""
+    for i, h in enumerate(headers):
+        if keyword in str(h):
+            return i
+    return None
 
 
-def read_sheet_data() -> list[list[str]]:
-    """Google Sheetsから生データを読み込む"""
-    print(f"Google Sheets 読み込み中: {SPREADSHEET_ID} / {WORKSHEET_NAME}")
+def _pad_row(row: list, min_len: int) -> list:
+    return list(row) + [""] * max(0, min_len - len(row))
+
+
+def _open_spreadsheet():
     creds = _get_credentials(scopes=SCOPES)
     gc = gspread.authorize(creds)
-    ss = gc.open_by_key(SPREADSHEET_ID)
-    ws = ss.worksheet(WORKSHEET_NAME)
-    data = ws.get(RANGE)
-    print(f"  {len(data)} 行取得完了（ヘッダー含む）")
-    return data
+    return gc.open_by_key(SPREADSHEET_ID)
 
 
-def parse_transactions(raw_data: list[list[str]]) -> pd.DataFrame:
-    """生データをトランザクション DataFrame に変換（現行フォーマット対応）
+# ─── 各タブ読み込み ────────────────────────────────────
 
-    列マッピング:
-      A(0): 商品カテゴリ  B(1): 約定日  C(2): 受渡日
-      D(3): 銘柄名        E(4): コード  F(5): 口座
-      G(6): 売買区分      H(7): 数量    I(8): 単価
-    """
-    if not raw_data:
+def _read_domestic(ws) -> pd.DataFrame:
+    """国内株式タブを読み込む（買付のみ）"""
+    all_rows = ws.get_all_values()
+    if len(all_rows) <= DATA_START_IDX:
         return pd.DataFrame()
 
-    header = raw_data[0]
-    rows = raw_data[1:]
-
-    # 商品カテゴリ → BigQuery スキーマ名への変換
-    CATEGORY_MAP = {
-        "国内株": "国内株式",
-        "米国株": "米国株式",
-        "投資信託": "投資信託",
+    headers = all_rows[HEADER_ROW_IDX]
+    idx = {
+        "trade_date": _find_col(headers, "約定日"),
+        "code":       _find_col(headers, "銘柄コード"),
+        "company":    _find_col(headers, "銘柄名"),
+        "account":    _find_col(headers, "口座区分"),
+        "buy_sell":   _find_col(headers, "売買区分"),
+        "quantity":   _find_col(headers, "数量"),
+        "unit_price": _find_col(headers, "単価"),
     }
+    required = ["trade_date", "buy_sell", "quantity"]
+    if any(idx[k] is None for k in required):
+        print(f"  警告: 国内株式の必須列が見つかりません: {[k for k in required if idx[k] is None]}")
+        return pd.DataFrame()
 
+    max_col = max(v for v in idx.values() if v is not None)
     records = []
-    for i, row in enumerate(rows, start=2):
-        # 空行スキップ
-        if not row or all(not str(c).strip() for c in row):
+    for row in all_rows[DATA_START_IDX:]:
+        row = _pad_row(row, max_col + 1)
+        if not any(str(c).strip() for c in row):
+            continue
+        if str(row[idx["buy_sell"]]).strip() != "買付":
+            continue
+        trade_date = _parse_date(row[idx["trade_date"]])
+        if not trade_date:
             continue
 
-        # 行を9列に揃える
-        row = list(row) + [""] * (9 - len(row))
-
-        trade_type = str(row[6]).strip()   # G列: 売買区分（買付/売却）
-
-        # 買付取引のみ処理
-        if trade_type != "買付":
-            continue
-
-        # 約定日をパース（B列: "2026/1/23" 形式）
-        trade_date_str = str(row[1]).strip()
-        try:
-            trade_date = datetime.date.fromisoformat(trade_date_str.replace("/", "-"))
-        except ValueError:
-            try:
-                trade_date = datetime.datetime.strptime(trade_date_str, "%Y/%m/%d").date()
-            except ValueError:
-                print(f"  行{i}: 日付パース失敗 '{trade_date_str}'、スキップ")
-                continue
-
-        raw_category = str(row[0]).strip()         # A列: 商品カテゴリ
-        product_type = CATEGORY_MAP.get(raw_category, raw_category)
-        company_name = str(row[3]).strip()         # D列: 銘柄・ファンド名
-        code = str(row[4]).strip() or None         # E列: 銘柄コード・ティッカー
-        account_type = str(row[5]).strip()         # F列: 口座
-
-        if not company_name:
-            continue
-
-        quantity = _parse_quantity(row[7])         # H列: 数量（"10" など）
-        unit_price = _parse_amount(row[8])         # I列: 単価（"1900" など）
-
-        # purchase_amount = 数量 × 単価（現地通貨）
-        amount = (quantity * unit_price) if (quantity and unit_price) else None
+        quantity   = _parse_number(row[idx["quantity"]])
+        unit_price = _parse_number(row[idx["unit_price"]]) if idx["unit_price"] is not None else None
+        amount     = (quantity * unit_price) if (quantity and unit_price) else None
 
         records.append({
-            "trade_date": trade_date,
-            "company_name": company_name,
-            "code": code,
-            "product_type": product_type,
-            "account_type": account_type,
-            "quantity": quantity,
-            "amount": amount,
+            "trade_date":   trade_date,
+            "code":         str(row[idx["code"]]).strip() if idx["code"] is not None else None,
+            "company_name": str(row[idx["company"]]).strip() if idx["company"] is not None else "",
+            "product_type": "国内株式",
+            "account_type": str(row[idx["account"]]).strip() if idx["account"] is not None else "",
+            "quantity":     quantity,
+            "unit_price":   unit_price,
+            "amount":       amount,
         })
+    return pd.DataFrame(records)
 
-    df = pd.DataFrame(records)
-    print(f"  買付トランザクション: {len(df)} 件")
-    return df
 
+def _read_us(ws) -> pd.DataFrame:
+    """米国株式タブを読み込む（買付のみ・JPY換算）"""
+    all_rows = ws.get_all_values()
+    if len(all_rows) <= DATA_START_IDX:
+        return pd.DataFrame()
+
+    headers = all_rows[HEADER_ROW_IDX]
+    idx = {
+        "trade_date": _find_col(headers, "約定日"),
+        "code":       _find_col(headers, "ティッカー"),
+        "company":    _find_col(headers, "銘柄名"),
+        "account":    _find_col(headers, "口座"),
+        "buy_sell":   _find_col(headers, "売買区分"),
+        "quantity":   _find_col(headers, "数量"),
+        "unit_price": _find_col(headers, "単価"),
+        "fx_rate":    _find_col(headers, "為替レート"),
+    }
+    required = ["trade_date", "buy_sell", "quantity"]
+    if any(idx[k] is None for k in required):
+        print(f"  警告: 米国株式の必須列が見つかりません: {[k for k in required if idx[k] is None]}")
+        return pd.DataFrame()
+
+    max_col = max(v for v in idx.values() if v is not None)
+    records = []
+    for row in all_rows[DATA_START_IDX:]:
+        row = _pad_row(row, max_col + 1)
+        if not any(str(c).strip() for c in row):
+            continue
+        if str(row[idx["buy_sell"]]).strip() != "買付":
+            continue
+        trade_date = _parse_date(row[idx["trade_date"]])
+        if not trade_date:
+            continue
+
+        quantity   = _parse_number(row[idx["quantity"]])
+        unit_price = _parse_number(row[idx["unit_price"]]) if idx["unit_price"] is not None else None
+        fx_rate    = _parse_number(row[idx["fx_rate"]])    if idx["fx_rate"]    is not None else None
+
+        # purchase_amount を円換算
+        if quantity and unit_price and fx_rate:
+            amount = round(quantity * unit_price * fx_rate, 0)
+        elif quantity and unit_price:
+            amount = quantity * unit_price  # 為替不明時はUSDのまま
+        else:
+            amount = None
+
+        records.append({
+            "trade_date":   trade_date,
+            "code":         str(row[idx["code"]]).strip() if idx["code"] is not None else None,
+            "company_name": str(row[idx["company"]]).strip() if idx["company"] is not None else "",
+            "product_type": "米国株式",
+            "account_type": str(row[idx["account"]]).strip() if idx["account"] is not None else "",
+            "quantity":     quantity,
+            "unit_price":   unit_price,
+            "amount":       amount,
+        })
+    return pd.DataFrame(records)
+
+
+def _read_trust(ws) -> pd.DataFrame:
+    """投資信託タブを読み込む（買付のみ）"""
+    all_rows = ws.get_all_values()
+    if len(all_rows) <= DATA_START_IDX:
+        return pd.DataFrame()
+
+    headers = all_rows[HEADER_ROW_IDX]
+    idx = {
+        "trade_date": _find_col(headers, "約定日"),
+        "company":    _find_col(headers, "ファンド名"),
+        "account":    _find_col(headers, "口座"),
+        "buy_sell":   _find_col(headers, "取引"),
+        "quantity":   _find_col(headers, "数量"),
+        "unit_price": _find_col(headers, "単価"),
+        "amount":     _find_col(headers, "受渡金額"),
+    }
+    required = ["trade_date", "buy_sell"]
+    if any(idx[k] is None for k in required):
+        print(f"  警告: 投資信託の必須列が見つかりません: {[k for k in required if idx[k] is None]}")
+        return pd.DataFrame()
+
+    max_col = max(v for v in idx.values() if v is not None)
+    records = []
+    for row in all_rows[DATA_START_IDX:]:
+        row = _pad_row(row, max_col + 1)
+        if not any(str(c).strip() for c in row):
+            continue
+        if str(row[idx["buy_sell"]]).strip() != "買付":
+            continue
+        trade_date = _parse_date(row[idx["trade_date"]])
+        if not trade_date:
+            continue
+
+        quantity   = _parse_number(row[idx["quantity"]])   if idx["quantity"]   is not None else None
+        unit_price = _parse_number(row[idx["unit_price"]]) if idx["unit_price"] is not None else None
+        # 受渡金額を優先、なければ quantity * unit_price
+        amount_direct = _parse_number(row[idx["amount"]]) if idx["amount"] is not None else None
+        amount = amount_direct if amount_direct else (
+            (quantity * unit_price) if (quantity and unit_price) else None
+        )
+
+        records.append({
+            "trade_date":   trade_date,
+            "code":         None,  # 投資信託にコードなし
+            "company_name": str(row[idx["company"]]).strip() if idx["company"] is not None else "",
+            "product_type": "投資信託",
+            "account_type": str(row[idx["account"]]).strip() if idx["account"] is not None else "",
+            "quantity":     quantity,
+            "unit_price":   unit_price,
+            "amount":       amount,
+        })
+    return pd.DataFrame(records)
+
+
+# ─── 集計 ─────────────────────────────────────────────
 
 def aggregate_holdings(df_tx: pd.DataFrame) -> pd.DataFrame:
     """
-    トランザクションを銘柄コードごとに集計して保有銘柄 DataFrame を生成。
+    トランザクションを銘柄コード（または銘柄名）ごとに集計して保有銘柄を生成。
 
-    スキーマ:
-        code             STRING     - 銘柄コード（国内株式・米国株式のみ）
-        company_name     STRING     - 会社名
-        product_type     STRING     - 商品区分（国内株式/米国株式/投資信託）
-        account_type     STRING     - 口座区分（NISA成長投資枠/つみたて投資枠）
-        shares           FLOAT64    - 保有株数（口数）
-        purchase_price   FLOAT64    - 取得単価（VWAP: 合計金額/合計株数）
-        purchase_date    DATE       - 最初の購入日
-        latest_purchase_date DATE   - 最新の購入日
-        purchase_amount  FLOAT64    - 取得金額合計（円）
-        tx_count         INT64      - 購入回数
+    BigQuery スキーマ:
+        code / company_name / product_type / account_type /
+        shares / purchase_price / purchase_date / latest_purchase_date /
+        purchase_amount / tx_count
     """
     if df_tx.empty:
         return pd.DataFrame()
 
-    # コードがない投資信託は company_name をキーにする
     df_tx = df_tx.copy()
+    # コードがない場合は銘柄名をキーに使う
     df_tx["key"] = df_tx.apply(
-        lambda r: r["code"] if r["code"] else r["company_name"], axis=1
+        lambda r: r["code"] if (r["code"] and str(r["code"]).strip()) else r["company_name"],
+        axis=1,
     )
 
     records = []
     for key, grp in df_tx.groupby("key"):
         grp = grp.sort_values("trade_date")
-        code = grp["code"].iloc[0]
-        company_name = grp["company_name"].iloc[0]
-        product_type = grp["product_type"].iloc[0]
-        account_type = grp["account_type"].iloc[0]
+        total_qty    = grp["quantity"].sum() if grp["quantity"].notna().any() else None
+        total_amount = grp["amount"].sum()   if grp["amount"].notna().any()   else None
 
-        total_qty = grp["quantity"].sum() if grp["quantity"].notna().any() else None
-        total_amount = grp["amount"].sum() if grp["amount"].notna().any() else None
-
-        # VWAP取得単価
+        purchase_price = None
         if total_qty and total_qty > 0 and total_amount:
             purchase_price = round(total_amount / total_qty, 2)
-        else:
-            purchase_price = None
 
         records.append({
-            "code": code,
-            "company_name": company_name,
-            "product_type": product_type,
-            "account_type": account_type,
-            "shares": float(total_qty) if total_qty is not None else None,
-            "purchase_price": purchase_price,
-            "purchase_date": grp["trade_date"].min(),
+            "code":                 grp["code"].iloc[0],
+            "company_name":         grp["company_name"].iloc[0],
+            "product_type":         grp["product_type"].iloc[0],
+            "account_type":         grp["account_type"].iloc[0],
+            "shares":               float(total_qty)    if total_qty    is not None else None,
+            "purchase_price":       purchase_price,
+            "purchase_date":        grp["trade_date"].min(),
             "latest_purchase_date": grp["trade_date"].max(),
-            "purchase_amount": float(total_amount) if total_amount is not None else None,
-            "tx_count": len(grp),
+            "purchase_amount":      float(total_amount) if total_amount is not None else None,
+            "tx_count":             len(grp),
         })
 
-    df_holdings = pd.DataFrame(records)
-    print(f"  集計後の保有銘柄数: {len(df_holdings)} 件")
-    return df_holdings
+    return pd.DataFrame(records)
 
+
+# ─── BigQuery ロード ───────────────────────────────────
 
 def load_to_bigquery(df: pd.DataFrame) -> None:
-    """DataFrame を BigQuery テーブル onitsuka-app.analytics.holdings にロード"""
     print(f"\nBigQuery ロード中: {BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}")
-
-    creds = _get_credentials()
+    creds  = _get_credentials()
     client = bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
 
-    # テーブルスキーマ
     schema = [
-        bigquery.SchemaField("code", "STRING", description="銘柄コード（国内株式:4-5桁数字、米国株式:ティッカー、投資信託:None）"),
-        bigquery.SchemaField("company_name", "STRING", description="会社名・ファンド名"),
-        bigquery.SchemaField("product_type", "STRING", description="商品区分（国内株式/米国株式/投資信託）"),
-        bigquery.SchemaField("account_type", "STRING", description="口座区分（NISA成長投資枠/NISAつみたて投資枠等）"),
-        bigquery.SchemaField("shares", "FLOAT64", description="保有株数・口数"),
-        bigquery.SchemaField("purchase_price", "FLOAT64", description="取得単価（VWAP、円換算）"),
-        bigquery.SchemaField("purchase_date", "DATE", description="最初の購入日"),
-        bigquery.SchemaField("latest_purchase_date", "DATE", description="最新の購入日"),
-        bigquery.SchemaField("purchase_amount", "FLOAT64", description="取得金額合計（円換算）"),
-        bigquery.SchemaField("tx_count", "INT64", description="購入回数"),
+        bigquery.SchemaField("code",                 "STRING",  description="銘柄コード（国内株:4-5桁, 米国株:ティッカー, 投資信託:None）"),
+        bigquery.SchemaField("company_name",         "STRING",  description="会社名・ファンド名"),
+        bigquery.SchemaField("product_type",         "STRING",  description="商品区分（国内株式/米国株式/投資信託）"),
+        bigquery.SchemaField("account_type",         "STRING",  description="口座区分"),
+        bigquery.SchemaField("shares",               "FLOAT64", description="保有株数・口数"),
+        bigquery.SchemaField("purchase_price",       "FLOAT64", description="取得単価（VWAP、円換算）"),
+        bigquery.SchemaField("purchase_date",        "DATE",    description="最初の購入日"),
+        bigquery.SchemaField("latest_purchase_date", "DATE",    description="最新の購入日"),
+        bigquery.SchemaField("purchase_amount",      "FLOAT64", description="取得金額合計（円換算）"),
+        bigquery.SchemaField("tx_count",             "INT64",   description="購入回数"),
     ]
 
-    table_id = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
-
+    table_id   = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
     job_config = bigquery.LoadJobConfig(
         schema=schema,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
 
-    # date 型カラムを datetime.date のまま維持（pandas は object 型で渡す）
     df = df.copy()
     for col in ["purchase_date", "latest_purchase_date"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col]).dt.date
 
     job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
-    job.result()  # 完了待機
-
+    job.result()
     table = client.get_table(table_id)
     print(f"  ロード完了: {table.num_rows} 行")
 
 
-def verify_bq(client: bigquery.Client) -> None:
-    """ロード後の検証クエリ"""
-    print("\n検証クエリ実行...")
-    sql = f"SELECT * FROM `{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}` LIMIT 5"
-    df = client.query(sql).to_dataframe(create_bqstorage_client=False)
-    print(df.to_string())
-
+# ─── エントリーポイント ────────────────────────────────
 
 def main():
-    # 1. シートからデータ読み込み
+    # スプレッドシートを開く
     try:
-        raw = read_sheet_data()
+        ss = _open_spreadsheet()
     except Exception as e:
-        print(f"警告: Google Sheetsの読み込みに失敗しました（スキップ）: {e}")
-        print("  シートID または ワークシート名を確認してください。")
+        print(f"警告: Google Spreadsheetsへの接続に失敗しました（スキップ）: {e}")
         sys.exit(0)
 
-    # 2. トランザクションをパース
-    df_tx = parse_transactions(raw)
-    if df_tx.empty:
-        print("エラー: 購入トランザクションが見つかりませんでした。")
-        sys.exit(1)
+    # 各タブを読み込む
+    readers = {
+        "国内株式": _read_domestic,
+        "米国株式": _read_us,
+        "投資信託": _read_trust,
+    }
 
-    print("\nトランザクションサンプル:")
-    print(df_tx.head(5).to_string())
+    all_dfs = []
+    for sheet_name, reader_fn in readers.items():
+        try:
+            ws = ss.worksheet(sheet_name)
+            df = reader_fn(ws)
+            print(f"  {sheet_name}: {len(df)} 件の買付トランザクション")
+            if not df.empty:
+                all_dfs.append(df)
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"  警告: ワークシート '{sheet_name}' が見つかりません（スキップ）")
+        except Exception as e:
+            print(f"  警告: '{sheet_name}' の読み込み失敗（スキップ）: {e}")
 
-    # 3. 銘柄ごとに集計
-    df_holdings = aggregate_holdings(df_tx)
-    print("\n保有銘柄サンプル:")
+    if not all_dfs:
+        print("警告: 読み込める買付データがありませんでした。")
+        sys.exit(0)
+
+    df_all = pd.concat(all_dfs, ignore_index=True)
+    print(f"\n合計買付トランザクション: {len(df_all)} 件")
+
+    df_holdings = aggregate_holdings(df_all)
+    print(f"集計後の保有銘柄数: {len(df_holdings)} 件")
     print(df_holdings.to_string())
 
-    # 4. BigQuery へロード
     load_to_bigquery(df_holdings)
-
-    # 5. 検証
-    creds = _get_credentials()
-    client = bigquery.Client(project=BQ_PROJECT, credentials=creds, location=BQ_LOCATION)
-    verify_bq(client)
-
     print("\n完了！")
 
 
