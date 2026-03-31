@@ -160,7 +160,7 @@ def run_analytics(loader: BQLoader, config: Config):
             logger.info(f"  OK: {os.path.basename(f)}")
         except Exception as e:
             logger.error(f"  FAILED: {os.path.basename(f)} — {e}")
-            raise
+            continue
 
     logger.info("✅ Analytics Layer 構築完了")
 
@@ -241,6 +241,8 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
 def run_daily(client: JQuantsClient, loader: BQLoader, config: Config):
     """日次バッチ"""
     logger.info(f"=== 日次バッチ開始: {datetime.now().strftime('%Y-%m-%d %H:%M')} ===")
+    # テーブル・データセットを冪等に作成（初回実行時・誤削除後の自動復旧）
+    run_setup(loader)
     results = {}
 
     # 1. 銘柄マスター更新
