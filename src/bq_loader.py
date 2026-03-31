@@ -38,7 +38,7 @@ class BQLoader:
 
         Args:
             df: 書込むデータ
-            table_id: 完全テーブルID (dataset.table または project.dataset.table)
+            table_id: テーブルID (dataset.table)
             write_disposition: WRITE_APPEND / WRITE_TRUNCATE
             schema: スキーマ定義（省略時は自動検出）
 
@@ -49,12 +49,12 @@ class BQLoader:
             logger.warning(f"Empty DataFrame, skipping load to {table_id}")
             return 0
 
-        full_table_id = f"{self.project}.{table_id}"
-
         # データセットを自動作成（存在しない場合）
         parts = table_id.split(".")
         if len(parts) >= 2:
             self.ensure_dataset(parts[-2])
+
+        full_table_id = f"{self.project}.{table_id}"
 
         job_config = bigquery.LoadJobConfig(
             write_disposition=write_disposition,
@@ -80,7 +80,8 @@ class BQLoader:
     ) -> int:
         """MERGE方式でのUPSERT（重複回避）
 
-        一時テーブルにデータを書込んでからMERGEする。
+        ターゲットテーブルが存在しない場合は WRITE_APPEND で新規作成。
+        存在する場合は一時テーブル経由でMERGEする。
 
         Args:
             df: 書込むデータ
@@ -93,6 +94,11 @@ class BQLoader:
         """
         if df.empty:
             return 0
+
+        # テーブルが存在しない場合は単純挿入（テーブルを自動作成）
+        if not self.table_exists(target_table):
+            logger.info(f"Table {target_table} not found, creating via WRITE_APPEND")
+            return self.load_dataframe(df, target_table, write_disposition="WRITE_APPEND")
 
         full_target = f"{self.project}.{target_table}"
         staging = staging_table or f"{target_table}_staging"
