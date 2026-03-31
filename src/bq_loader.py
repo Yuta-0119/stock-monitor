@@ -19,6 +19,14 @@ class BQLoader:
         self.location = location
         self.client = bigquery.Client(project=project, location=location)
 
+    def ensure_dataset(self, dataset_name: str) -> None:
+        """データセットが存在しなければ作成する"""
+        dataset_id = f"{self.project}.{dataset_name}"
+        dataset = bigquery.Dataset(dataset_id)
+        dataset.location = self.location
+        self.client.create_dataset(dataset, exists_ok=True)
+        logger.debug(f"Dataset ready: {dataset_id}")
+
     def load_dataframe(
         self,
         df: pd.DataFrame,
@@ -30,7 +38,7 @@ class BQLoader:
 
         Args:
             df: 書込むデータ
-            table_id: 完全テーブルID (project.dataset.table)
+            table_id: 完全テーブルID (dataset.table または project.dataset.table)
             write_disposition: WRITE_APPEND / WRITE_TRUNCATE
             schema: スキーマ定義（省略時は自動検出）
 
@@ -42,6 +50,11 @@ class BQLoader:
             return 0
 
         full_table_id = f"{self.project}.{table_id}"
+
+        # データセットを自動作成（存在しない場合）
+        parts = table_id.split(".")
+        if len(parts) >= 2:
+            self.ensure_dataset(parts[-2])
 
         job_config = bigquery.LoadJobConfig(
             write_disposition=write_disposition,
@@ -171,4 +184,3 @@ class BQLoader:
         sql = f"SELECT COUNT(*) as cnt FROM `{full_table}`"
         result = self.client.query(sql).to_dataframe()
         return int(result["cnt"].iloc[0])
-
