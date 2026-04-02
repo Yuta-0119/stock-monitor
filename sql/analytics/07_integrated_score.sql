@@ -1,23 +1,21 @@
--- STEP 7: 統合スコア（最重要ビュー）
--- 流動性・ボラティリティ・チャート・ファンダメンタル・バリュエーション・相場環境を統合
--- equity_master カラム名: company_name, sector33_name, market_segment
+-- STEP 7: integrated_score (strategy.* views unified)
 CREATE OR REPLACE VIEW `onitsuka-app.analytics.integrated_score` AS
 SELECT
-  em.code,
-  em.company_name,
-  em.sector33_name,
-  em.market_segment,
-  -- 流動性
+  m.code,
+  m.company_name,
+  m.sector33_name,
+  m.market_name AS market_segment,
+  -- liquidity
   liq.avg_turnover_20d_oku,
   liq.cv_value,
   liq.liquidity_grade,
   liq.cv_grade,
-  -- ボラティリティ
+  -- volatility
   vol.atr_pct,
   vol.range_1m_pct,
   vol.hv_contraction,
   vol.volatility_score,
-  -- チャート
+  -- chart
   cht.close AS latest_close,
   cht.ma200_trend,
   cht.price_vs_ma200,
@@ -27,7 +25,7 @@ SELECT
   cht.breakout,
   cht.near_52w_high,
   cht.chart_score,
-  -- ファンダメンタル
+  -- fundamental
   fnd.sales_cagr_3y_pct,
   fnd.op_cagr_3y_pct,
   fnd.roe_pct,
@@ -40,93 +38,56 @@ SELECT
   fnd.financial_health,
   IFNULL(fnd.sales_cagr_score, 0) + IFNULL(fnd.op_cagr_score, 0)
     + IFNULL(fnd.roe_score, 0) + IFNULL(fnd.roic_score, 0) AS fundamental_total,
-  -- バリュエーション
+  -- valuation
   val.per,
   val.pbr,
   val.per_score,
   val.pbr_score,
   IFNULL(val.per_score, 0) + IFNULL(val.pbr_score, 0) AS valuation_total,
-  -- 相場環境
+  -- market
   env.topix_close,
   env.market_phase,
   env.environment_score,
-  -- 決算情報
+  -- earnings
   ern.next_earnings_date,
   ern.days_to_earnings,
-  -- ★ 窪田トレードスコア（ボラ5点 + チャート5点 = 10点満点）
+  -- kubota trade score
   IFNULL(vol.volatility_score, 0) + IFNULL(cht.chart_score, 0) AS kubota_trade_score,
-  -- ★ 成長株投資スコア（29点満点）
+  -- growth invest score
   IFNULL(fnd.sales_cagr_score, 0) + IFNULL(fnd.op_cagr_score, 0)
     + IFNULL(fnd.roe_score, 0) + IFNULL(fnd.roic_score, 0)
     + IFNULL(val.per_score, 0) + IFNULL(val.pbr_score, 0) AS growth_invest_score,
-  -- ★ 総合判定
+  -- screening status
   CASE
-    WHEN fnd.financial_health = 'FAIL' THEN 'FAIL_FINANCIAL'
-    WHEN liq.liquidity_grade = 'FAIL' THEN 'FAIL_LIQUIDITY'
-    ELSE 'ACTIVE'
+    WHEN fnd.financial_health = '"'"'FAIL'"'"' THEN '"'"'FAIL_FINANCIAL'"'"'
+    WHEN liq.liquidity_grade = '"'"'D'"'"' THEN '"'"'FAIL_LIQUIDITY'"'"'
+    ELSE '"'"'ACTIVE'"'"'
   END AS screening_status,
-  -- ★ 窪田エントリーシグナル
-  -- 買いシグナル: 放れ+出来高急増が最優先条件。放れ当日は consolidation が崩れるため chart_score は不問
-  -- 放れ待ち: もみ合い形成中（consolidation=TRUE かつ未放れ）
+  -- kubota signal
   CASE
-    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B')
+    WHEN liq.liquidity_grade IN ('"'"'A'"'"', '"'"'B'"'"')
       AND vol.volatility_score >= 3
       AND cht.breakout = TRUE
       AND cht.volume_surge = TRUE
-      AND (cht.ma200_trend = 'UP' OR cht.price_vs_ma200 = 'ABOVE')
-      AND env.market_phase = 'BULL'
-    THEN '買いシグナル'
-    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B', 'PASS_C')
+      AND (cht.ma200_trend = '"'"'UP'"'"' OR cht.price_vs_ma200 = '"'"'ABOVE'"'"')
+      AND env.market_phase = '"'"'BULL'"'"'
+    THEN '"'"'buy_signal'"'"'
+    WHEN liq.liquidity_grade IN ('"'"'A'"'"', '"'"'B'"'"', '"'"'C'"'"')
       AND vol.volatility_score >= 2
       AND cht.consolidation = TRUE
       AND cht.breakout = FALSE
-    THEN '放れ待ち'
-    ELSE '-'
+    THEN '"'"'wait'"'"'
+    ELSE '"'"'-'"'"'
   END AS kubota_signal,
-
-  -- ★ シグナル確度（0〜100%）
-  -- 買いシグナル: ボラ強度・52週高値・財務・MA200の充足度で加点
-  -- 放れ待ち: レンジ収縮の強さ・ボラ強度・財務で加点
-  CASE
-    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B')
-      AND vol.volatility_score >= 3
-      AND cht.breakout = TRUE
-      AND cht.volume_surge = TRUE
-      AND (cht.ma200_trend = 'UP' OR cht.price_vs_ma200 = 'ABOVE')
-      AND env.market_phase = 'BULL'
-    THEN LEAST(100,
-      50  -- 基礎点
-      + (CASE WHEN vol.volatility_score = 5 THEN 15 WHEN vol.volatility_score = 4 THEN 7 ELSE 0 END)
-      + (CASE WHEN cht.near_52w_high = TRUE THEN 10 ELSE 0 END)
-      + (CASE WHEN fnd.financial_health = 'PASS' THEN 10 ELSE 0 END)
-      + (CASE WHEN cht.ma200_trend = 'UP' AND cht.price_vs_ma200 = 'ABOVE' THEN 10 ELSE 0 END)
-      + (CASE WHEN vol.atr_pct >= 2.0 THEN 5 ELSE 0 END)
-    )
-    WHEN liq.liquidity_grade IN ('PASS_A', 'PASS_B', 'PASS_C')
-      AND vol.volatility_score >= 2
-      AND cht.consolidation = TRUE
-      AND cht.breakout = FALSE
-    THEN LEAST(100,
-      (CASE WHEN cht.range_contraction < 0.3 THEN 60
-            WHEN cht.range_contraction < 0.4 THEN 50
-            ELSE 40 END)
-      + (CASE WHEN vol.volatility_score = 5 THEN 15 WHEN vol.volatility_score = 4 THEN 7 ELSE 0 END)
-      + (CASE WHEN cht.near_52w_high = TRUE THEN 10 ELSE 0 END)
-      + (CASE WHEN fnd.financial_health = 'PASS' THEN 10 ELSE 0 END)
-    )
-    ELSE NULL
-  END AS signal_confidence,
-
-  -- ★ 価格強度スコア（需給代替指標 / 3点満点）
-  -- margin_interest APIはStandardプランで利用不可のため株価位置で代替
+  CAST(NULL AS INT64) AS signal_confidence,
   (CASE WHEN cht.near_52w_high = TRUE THEN 2 ELSE 0 END)
   + (CASE WHEN cht.volume_ratio >= 1.5 THEN 1 ELSE 0 END) AS price_strength_score
-FROM `onitsuka-app.stock_master.equity_master` em
-LEFT JOIN `onitsuka-app.analytics.kubota_liquidity`  liq ON em.code = liq.code
-LEFT JOIN `onitsuka-app.analytics.kubota_volatility` vol ON em.code = vol.code
-LEFT JOIN `onitsuka-app.analytics.kubota_chart`      cht ON em.code = cht.code
-LEFT JOIN `onitsuka-app.analytics.fundamental_score` fnd ON em.code = fnd.code
-LEFT JOIN `onitsuka-app.analytics.valuation_score`   val ON em.code = val.code
-LEFT JOIN `onitsuka-app.analytics.earnings_next`     ern ON em.code = ern.code
-CROSS JOIN `onitsuka-app.analytics.market_environment` env
-WHERE em.market_segment LIKE '%プライム%';
+FROM `onitsuka-app.raw.equities_master` m
+LEFT JOIN `onitsuka-app.strategy.liquidity_screening`      liq ON m.code = liq.code
+LEFT JOIN `onitsuka-app.strategy.volatility_screening`     vol ON m.code = vol.code
+LEFT JOIN `onitsuka-app.strategy.chart_pattern_screening`  cht ON m.code = cht.code
+LEFT JOIN `onitsuka-app.strategy.fundamental_growth_score` fnd ON m.code = fnd.code
+LEFT JOIN `onitsuka-app.strategy.valuation_assessment`     val ON m.code = val.code
+LEFT JOIN `onitsuka-app.strategy.earnings_schedule`        ern ON m.code = ern.code
+CROSS JOIN `onitsuka-app.strategy.market_condition`        env
+WHERE m.market_name LIKE '%Prime%' OR m.market_name LIKE '%prime%' OR m.market_name LIKE '%-Prime%';
