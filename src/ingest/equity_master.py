@@ -19,7 +19,7 @@ COLUMN_MAP = {
     "S33Nm": "sector33_name",
     "ScaleCat": "scale_category",
     "Mkt": "market_code",
-    "MktNm": "market_segment",
+    "MktNm": "market_name",
     # 旧フォーマット（互換性維持）
     "CompanyName": "company_name",
     "CompanyNameEnglish": "company_name_english",
@@ -29,7 +29,7 @@ COLUMN_MAP = {
     "Sector33CodeName": "sector33_name",
     "ScaleCategory": "scale_category",
     "MarketCode": "market_code",
-    "MarketCodeName": "market_segment",
+    "MarketCodeName": "market_name",
 }
 
 
@@ -59,6 +59,6 @@ def ingest(client: JQuantsClient, loader: BQLoader, config) -> int:
     # 全件洗い替え（WRITE_TRUNCATE）
     return loader.load_dataframe(
         df,
-        f"{config.ds_master}.equity_master",
+        f"{config.ds_master}.equities_master",
         write_disposition="WRITE_TRUNCATE",
     )
