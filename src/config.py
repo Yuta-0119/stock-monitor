@@ -14,14 +14,14 @@ class Config:
     bq_project: str = ""
     bq_location: str = "asia-northeast1"
 
-    # データセット名
-    ds_raw: str = "stock_raw"
+    # データセット名（raw.* テーブルに統一）
+    ds_raw: str = "raw"
     ds_analytics: str = "analytics"
-    ds_master: str = "stock_master"
+    ds_master: str = "raw"       # 銘柄マスターも raw データセットへ
     ds_portfolio: str = "portfolio"
 
     # バッチ設定
-    rate_limit_per_min: int = 120  # Standardプラン
+    rate_limit_per_min: int = 120  # Standard プラン用
     retry_count: int = 3
     retry_backoff: float = 2.0
 
