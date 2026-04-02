@@ -81,7 +81,7 @@ def ingest_daily(client: JQuantsClient, loader: BQLoader, config,
     """
     if target_date is None:
         # BigQueryの最新日付の翌日から取得
-        latest = loader.get_latest_date(f"{config.ds_raw}.daily_quotes")
+        latest = loader.get_latest_date(f"{config.ds_raw}.stock_prices_daily")
         if latest:
             next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
             target_date = next_date.strftime("%Y%m%d")
@@ -99,9 +99,9 @@ def ingest_daily(client: JQuantsClient, loader: BQLoader, config,
 
     return loader.merge_dataframe(
         df,
-        f"{config.ds_raw}.daily_quotes",
+        f"{config.ds_raw}.stock_prices_daily",
         merge_keys=["date", "code"],
-        staging_table=f"{config.ds_raw}.daily_quotes_staging",
+        staging_table=f"{config.ds_raw}.stock_prices_daily_staging",
     )
 
 
@@ -144,7 +144,7 @@ def ingest_bulk(client: JQuantsClient, loader: BQLoader, config,
                         mode = "WRITE_APPEND"
                     rows = loader.load_dataframe(
                         df,
-                        f"{config.ds_raw}.daily_quotes",
+                        f"{config.ds_raw}.stock_prices_daily",
                         write_disposition=mode,
                     )
                     total_rows += rows
@@ -168,7 +168,7 @@ def ingest_bulk(client: JQuantsClient, loader: BQLoader, config,
         df = _transform(pd.DataFrame(data))
         return loader.load_dataframe(
             df,
-            f"{config.ds_raw}.daily_quotes",
+            f"{config.ds_raw}.stock_prices_daily",
             write_disposition="WRITE_TRUNCATE",
         )
 
@@ -184,7 +184,7 @@ def ingest_backfill(client: JQuantsClient, loader: BQLoader, config,
     df = _transform(pd.DataFrame(data))
     return loader.merge_dataframe(
         df,
-        f"{config.ds_raw}.daily_quotes",
+        f"{config.ds_raw}.stock_prices_daily",
         merge_keys=["date", "code"],
-        staging_table=f"{config.ds_raw}.daily_quotes_staging",
+        staging_table=f"{config.ds_raw}.stock_prices_daily_staging",
     )
