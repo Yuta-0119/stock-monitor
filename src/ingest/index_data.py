@@ -13,7 +13,7 @@ def ingest_topix(client: JQuantsClient, loader: BQLoader, config,
                  from_date: str | None = None, to_date: str | None = None) -> int:
     """TOPIX四本値の取込み"""
     if from_date is None:
-        latest = loader.get_latest_date(f"{config.ds_raw}.topix_daily")
+        latest = loader.get_latest_date(f"{config.ds_raw}.index_prices_daily")
         if latest:
             next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
             from_date = next_date.strftime("%Y%m%d")
@@ -38,9 +38,13 @@ def ingest_topix(client: JQuantsClient, loader: BQLoader, config,
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    return loader.load_dataframe(
-        df, f"{config.ds_raw}.topix_daily",
-        write_disposition="WRITE_TRUNCATE"
+    df["index_code"] = "0000"
+    keep = ["date", "index_code"] + [c for c in ["open", "high", "low", "close"] if c in df.columns]
+    df = df[keep]
+    return loader.merge_dataframe(
+        df, f"{config.ds_raw}.index_prices_daily",
+        merge_keys=["date", "index_code"],
+        staging_table=f"{config.ds_raw}.index_prices_daily_staging",
     )
 
 
@@ -48,7 +52,7 @@ def ingest_indices(client: JQuantsClient, loader: BQLoader, config,
                    from_date: str | None = None, to_date: str | None = None) -> int:
     """指数四本値の取込み（Standard以上）"""
     if from_date is None:
-        latest = loader.get_latest_date(f"{config.ds_raw}.index_daily")
+        latest = loader.get_latest_date(f"{config.ds_raw}.index_prices_daily")
         if latest:
             next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
             from_date = next_date.strftime("%Y%m%d")
@@ -76,7 +80,7 @@ def ingest_indices(client: JQuantsClient, loader: BQLoader, config,
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     return loader.merge_dataframe(
-        df, f"{config.ds_raw}.index_daily",
+        df, f"{config.ds_raw}.index_prices_daily",
         merge_keys=["date", "index_code"],
-        staging_table=f"{config.ds_raw}.index_daily_staging",
+        staging_table=f"{config.ds_raw}.index_prices_daily_staging",
     )
