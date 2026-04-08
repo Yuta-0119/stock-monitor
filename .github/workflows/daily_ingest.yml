@@ -1,7 +1,7 @@
 name: Daily Stock Data Ingestion
 on:
   schedule:
-    - cron: '0 9 * * 1-5'
+    - cron: '30 7 * * 1-5'  # 16:30 JST (UTC+9)
   workflow_dispatch:
     inputs:
       mode:
@@ -26,6 +26,7 @@ jobs:
       BQ_PROJECT: onitsuka-app
       JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
       SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout
@@ -45,30 +46,41 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Step 1 – データ取込み
+      - name: Step 1 - Data ingestion (daily + minute)
         run: python -m src.main --mode ${{ github.event.inputs.mode || 'daily' }}
 
-      - name: Step 2 – Analytics Layer 更新
+      - name: Step 2 - Analytics Layer
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode analytics
 
-      - name: Step 2b – ダッシュボードキャッシュ更新
+      - name: Step 2b - Cache refresh (all tables)
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python scripts/refresh_cache.py
 
-      - name: Step 3a – 保有銘柄 BigQuery 同期
+      - name: Step 3a - Holdings sync
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         continue-on-error: true
         run: python scripts/load_holdings.py
 
-      - name: Step 3b – 外部価格取得（米国株・投資信託）
+      - name: Step 3b - External prices
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python scripts/fetch_external_prices.py
 
-      - name: Step 4 – Google Sheets エクスポート
+      - name: Step 4 - Google Sheets export
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
         run: python -m src.main --mode export
 
-      - name: Report failure
+      - name: Notify success
+        if: success() && (github.event_name == 'schedule' || github.event.inputs.mode == 'daily')
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d '{"attachments":[{"color":"good","text":"ETL Daily Update completed successfully (GitHub Actions)"}]}'
+
+      - name: Notify failure
         if: failure()
-        run: echo "Pipeline failed at $(date '+%Y-%m-%d %H:%M:%S JST')"
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d '{"attachments":[{"color":"danger","text":"ETL Daily Update FAILED (GitHub Actions). Check: https://github.com/Yuta-0119/stock-monitor/actions"}]}'
+          echo "Pipeline failed at $(date '+%Y-%m-%d %H:%M:%S JST')"
