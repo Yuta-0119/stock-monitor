@@ -184,6 +184,11 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
     from src.ingest.daily_quotes import ingest_bulk
     results["daily_quotes"] = ingest_bulk(client, loader, config)
 
+
+    # 2b. minute bars
+    from src.ingest.minute_quotes import ingest_minute
+    results["minute_quotes"] = ingest_minute(client, loader, config)
+
     # 3. 財務サマリー（CSV一括ダウンロード）
     from src.ingest.financial_summary import ingest_bulk as ingest_fin_bulk
     results["financial_summary"] = ingest_fin_bulk(client, loader, config)
