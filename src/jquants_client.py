@@ -254,3 +254,13 @@ class JQuantsClient:
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
+
+    def get_minute_quotes(self, date: str) -> list[dict]:
+        """分足OHLCを取得
+
+        Args:
+            date: 取得日（YYYYMMDD形式）
+        """
+        params = {"date": date}
+        logger.info(f"Fetching minute quotes for date={date}")
+        return self._get_all_pages("/equities/bars/minute", params)
