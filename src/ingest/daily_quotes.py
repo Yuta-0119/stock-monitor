@@ -49,6 +49,9 @@ KEEP_COLS = [
     "adjustment_close", "adjustment_volume",
 ]
 
+# Columns that must be INT64 (matching BigQuery schema)
+INT_COLS = {"volume", "adjustment_volume"}
+
 
 def _transform(df: pd.DataFrame) -> pd.DataFrame:
     """データ変換"""
@@ -68,6 +71,9 @@ def _transform(df: pd.DataFrame) -> pd.DataFrame:
     float_cols = [c for c in df.columns if c not in ("date", "code")]
     for col in float_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+        # INT64 columns: convert float->int (BigQuery schema requires INT64)
+        if col in INT_COLS:
+            df[col] = df[col].fillna(0).astype("int64")
 
     return df
 
