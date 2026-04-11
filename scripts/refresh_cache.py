@@ -1,10 +1,14 @@
 """
 Cache table refresh script.
 
-Refreshes all cache tables needed by:
-1. Dashboard (raw.cache_integrated_ranking)
-2. Auto-trading system (cache_market_condition, cache_market_overview,
-   cache_backtest_stats, cache_minute_profile)
+Refreshes cache tables actually consumed by downstream systems:
+1. Dashboard + trading watchlist SQL -> raw.cache_integrated_ranking
+2. Trading morning session (Nikkei gap filter) -> raw.cache_market_condition
+
+Previously this also refreshed cache_market_overview, cache_backtest_stats,
+and cache_minute_profile, but the Phase B cleanup (2026-04-11) confirmed
+that none of those three tables are read by any live trading code. They
+have been dropped and are no longer produced here.
 """
 
 import os
@@ -66,20 +70,7 @@ def main():
         print(f"  FAILED: {e}")
         errors.append(f"cache_integrated_ranking: {e}")
 
-    # 2. cache_market_overview
-    print("Refreshing cache_market_overview...")
-    try:
-        client.query(f"""
-            CREATE OR REPLACE TABLE `{BQ_PROJECT}.raw.cache_market_overview` AS
-            SELECT * FROM `{BQ_PROJECT}.mart.market_overview`
-            ORDER BY date DESC LIMIT 30
-        """).result()
-        print("  OK")
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        errors.append(f"cache_market_overview: {e}")
-
-    # 3. cache_market_condition
+    # 2. cache_market_condition
     print("Refreshing cache_market_condition...")
     try:
         client.query(f"""
@@ -91,47 +82,6 @@ def main():
         print(f"  FAILED: {e}")
         errors.append(f"cache_market_condition: {e}")
 
-    # 4. cache_backtest_stats
-    print("Refreshing cache_backtest_stats...")
-    try:
-        client.query(f"""
-            CREATE OR REPLACE TABLE `{BQ_PROJECT}.raw.cache_backtest_stats` AS
-            SELECT code,
-                COUNT(*) AS past_signals,
-                ROUND(AVG(return_5d_pct), 2) AS avg_5d,
-                ROUND(AVG(return_10d_pct), 2) AS avg_10d,
-                ROUND(AVG(return_20d_pct), 2) AS avg_20d,
-                ROUND(SAFE_DIVIDE(COUNTIF(return_5d_pct > 0), COUNT(return_5d_pct)) * 100, 1) AS winrate_5d,
-                ROUND(SAFE_DIVIDE(COUNTIF(return_10d_pct > 0), COUNT(return_10d_pct)) * 100, 1) AS winrate_10d,
-                ROUND(SAFE_DIVIDE(COUNTIF(return_20d_pct > 0), COUNT(return_20d_pct)) * 100, 1) AS winrate_20d,
-                ROUND(AVG(CASE WHEN return_20d_pct > 0 THEN return_20d_pct END), 2) AS avg_win_20d,
-                ROUND(AVG(CASE WHEN return_20d_pct <= 0 THEN return_20d_pct END), 2) AS avg_loss_20d
-            FROM `{BQ_PROJECT}.strategy.signal_backtest`
-            GROUP BY code
-        """).result()
-        print("  OK")
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        errors.append(f"cache_backtest_stats: {e}")
-
-    # 5. cache_minute_profile
-    print("Refreshing cache_minute_profile...")
-    try:
-        client.query(f"""
-            CREATE OR REPLACE TABLE `{BQ_PROJECT}.raw.cache_minute_profile` AS
-            SELECT code, time,
-                ROUND(AVG(high - low), 2) AS avg_range,
-                ROUND(AVG(volume), 0) AS avg_volume,
-                COUNT(*) AS sample_days
-            FROM `{BQ_PROJECT}.raw.stock_prices_minute`
-            WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 60 DAY)
-            GROUP BY code, time
-        """).result()
-        print("  OK")
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        errors.append(f"cache_minute_profile: {e}")
-
     elapsed = time.time() - t0
     print(f"\nCache refresh completed in {elapsed:.1f}s")
 
@@ -139,7 +89,7 @@ def main():
     if errors:
         send_slack(f"ETL Cache Refresh: {len(errors)} errors\n" + "\n".join(errors), "danger")
     else:
-        send_slack(f"ETL Cache Refresh: All 5 tables refreshed ({elapsed:.0f}s)", "good")
+        send_slack(f"ETL Cache Refresh: All 2 tables refreshed ({elapsed:.0f}s)", "good")
 
 
 if __name__ == "__main__":
