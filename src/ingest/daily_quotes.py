@@ -181,16 +181,54 @@ def ingest_bulk(client: JQuantsClient, loader: BQLoader, config,
 
 def ingest_backfill(client: JQuantsClient, loader: BQLoader, config,
                     from_date: str, to_date: str) -> int:
-    """期間指定でのバックフィル（差分取込み）"""
+    """期間指定でのバックフィル（差分取込み）
+
+    J-Quants v2 `/equities/bars/daily` は ``from``/``to`` をコード指定なしでは
+    受け付けず 400 を返す。全銘柄を取得するには ``date=YYYYMMDD`` で 1 日ずつ
+    呼び出す必要があるため、この関数は [from_date, to_date] の範囲を 1 日ずつ
+    ループして MERGE する。休日や API 未提供日は 0 行として静かにスキップ。
+    """
     logger.info(f"Backfilling daily quotes: {from_date} to {to_date}")
-    data = client.get_daily_quotes(from_date=from_date, to_date=to_date)
-    if not data:
+
+    try:
+        start = datetime.strptime(from_date, "%Y%m%d").date()
+        end = datetime.strptime(to_date, "%Y%m%d").date()
+    except ValueError as e:
+        logger.error(f"Invalid date format (expected YYYYMMDD): {e}")
+        raise
+
+    if start > end:
+        logger.warning(
+            f"from_date {from_date} > to_date {to_date}, nothing to backfill"
+        )
         return 0
 
-    df = _transform(pd.DataFrame(data))
-    return loader.merge_dataframe(
-        df,
-        f"{config.ds_raw}.stock_prices_daily",
-        merge_keys=["date", "code"],
-        staging_table=f"{config.ds_raw}.stock_prices_daily_staging",
+    total_rows = 0
+    cur = start
+    while cur <= end:
+        target = cur.strftime("%Y%m%d")
+        logger.info(f"  Fetching {target}")
+        try:
+            data = client.get_daily_quotes(date=target)
+            if not data:
+                logger.info(f"  {target}: no data (holiday or missing)")
+            else:
+                df = _transform(pd.DataFrame(data))
+                rows = loader.merge_dataframe(
+                    df,
+                    f"{config.ds_raw}.stock_prices_daily",
+                    merge_keys=["date", "code"],
+                    staging_table=(
+                        f"{config.ds_raw}.stock_prices_daily_staging"
+                    ),
+                )
+                total_rows += rows
+                logger.info(f"  {target}: MERGEd {rows:,} rows")
+        except Exception as e:
+            logger.error(f"  {target} failed: {e}")
+        cur += timedelta(days=1)
+
+    logger.info(
+        f"Backfill complete: {from_date}..{to_date} total {total_rows:,} rows"
     )
+    return total_rows
