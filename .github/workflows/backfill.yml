@@ -1,0 +1,69 @@
+name: Backfill Daily Quotes
+
+# Manually triggered backfill for raw.stock_prices_daily.
+# Use when a historic gap is discovered (e.g. after a workflow outage).
+# Runs `python -m src.main --mode backfill --from FROM --to TO`, which
+# calls daily_quotes.ingest_backfill -> J-Quants /prices/daily_quotes
+# date-range endpoint and MERGEs into raw.stock_prices_daily on (date, code).
+#
+# Example:
+#   gh workflow run backfill.yml -f from_date=20260324 -f to_date=20260330
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: 'Start date (YYYYMMDD, inclusive)'
+        required: true
+        type: string
+      to_date:
+        description: 'End date (YYYYMMDD, inclusive)'
+        required: true
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BQ_PROJECT: onitsuka-app
+      JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Backfill daily quotes
+        run: |
+          python -m src.main --mode backfill \
+            --from ${{ github.event.inputs.from_date }} \
+            --to ${{ github.event.inputs.to_date }}
+
+      - name: Notify success
+        if: success()
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"attachments\":[{\"color\":\"good\",\"text\":\"Backfill ${{ github.event.inputs.from_date }} -> ${{ github.event.inputs.to_date }} completed (GitHub Actions)\"}]}"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"attachments\":[{\"color\":\"danger\",\"text\":\"Backfill ${{ github.event.inputs.from_date }} -> ${{ github.event.inputs.to_date }} FAILED (GitHub Actions). Check: https://github.com/Yuta-0119/stock-monitor/actions\"}]}"
