@@ -258,6 +258,16 @@ def run_daily(client: JQuantsClient, loader: BQLoader, config: Config):
     from src.ingest.daily_quotes import ingest_daily
     results["daily_quotes"] = ingest_daily(client, loader, config)
 
+    # 2b. 分足株価OHLC (bug fix 2026-04-11: previously only run in init mode,
+    #     causing stock_prices_minute to become stale and breaking downstream
+    #     strategies that depend on minute-level data e.g. ORB breakout)
+    from src.ingest.minute_quotes import ingest_minute
+    try:
+        results["minute_quotes"] = ingest_minute(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_minute skipped: {e}")
+        results["minute_quotes"] = 0
+
     # 3. 財務サマリー
     from src.ingest.financial_summary import ingest as ingest_fin
     results["financial_summary"] = ingest_fin(client, loader, config)
