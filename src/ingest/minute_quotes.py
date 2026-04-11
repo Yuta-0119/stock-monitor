@@ -64,21 +64,13 @@ def _transform(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def ingest_minute(client: JQuantsClient, loader: BQLoader, config,
-                  target_date: str | None = None) -> int:
-    """日次更新: 指定日の分足データを取得
-
-    Args:
-        target_date: 取得日（YYYYMMDD形式）。Noneの場合は最新日を自動判定
-    """
-    if target_date is None:
-        latest = loader.get_latest_date(f"{config.ds_raw}.stock_prices_minute")
-        if latest:
-            next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
-            target_date = next_date.strftime("%Y%m%d")
-        else:
-            target_date = datetime.now().strftime("%Y%m%d")
-
+def _fetch_and_load_one_day(
+    client: JQuantsClient,
+    loader: BQLoader,
+    config,
+    target_date: str,
+) -> int:
+    """Fetch and load minute quotes for a single day."""
     logger.info(f"Fetching minute quotes for date={target_date}")
     data = client.get_minute_quotes(date=target_date)
     if not data:
@@ -94,3 +86,64 @@ def ingest_minute(client: JQuantsClient, loader: BQLoader, config,
         f"{config.ds_raw}.stock_prices_minute",
         write_disposition="WRITE_APPEND",
     )
+
+
+def ingest_minute(client: JQuantsClient, loader: BQLoader, config,
+                  target_date: str | None = None) -> int:
+    """日次更新: 指定日以降の不足分を一括取得
+
+    Args:
+        target_date: 取得日（YYYYMMDD形式）。
+                     Noneの場合は、最新日の翌日から今日まで順番にbackfillする。
+                     明示的に指定した場合は、その日一日分のみ取得する。
+    """
+    if target_date is not None:
+        # Explicit single-day mode
+        return _fetch_and_load_one_day(client, loader, config, target_date)
+
+    # Auto-backfill mode: fill any gap from (latest+1) to today
+    # Use a direct query with cache disabled to avoid stale query cache.
+    from google.cloud import bigquery as _bq
+    full_table = f"{loader.project}.{config.ds_raw}.stock_prices_minute"
+    job_config = _bq.QueryJobConfig(use_query_cache=False)
+    sql = f"SELECT MAX(date) AS max_date FROM `{full_table}`"
+    try:
+        result = loader.client.query(sql, job_config=job_config).result()
+        row = next(iter(result), None)
+        latest_date = row["max_date"] if row else None
+    except Exception as e:
+        logger.warning(f"get latest date failed: {e}")
+        latest_date = None
+
+    logger.info(f"DEBUG: fresh MAX(date)={latest_date!r} from {full_table}")
+
+    if latest_date is None:
+        # No data in table → fetch today only (init-like behavior)
+        today = datetime.now().strftime("%Y%m%d")
+        return _fetch_and_load_one_day(client, loader, config, today)
+
+    # Iterate from (latest+1) up to today. Cap at 10 days to avoid runaway.
+    start = latest_date + timedelta(days=1)
+    today = datetime.now().date()
+    total_loaded = 0
+    max_iterations = 10
+
+    iter_date = start
+    count = 0
+    while iter_date <= today and count < max_iterations:
+        target_str = iter_date.strftime("%Y%m%d")
+        try:
+            loaded = _fetch_and_load_one_day(client, loader, config, target_str)
+            total_loaded += loaded
+        except Exception as e:
+            logger.warning(f"ingest_minute backfill for {target_str} failed: {e}")
+        iter_date += timedelta(days=1)
+        count += 1
+
+    if count >= max_iterations:
+        logger.warning(
+            f"Minute backfill reached max iterations ({max_iterations}). "
+            f"Some dates may still be missing."
+        )
+
+    return total_loaded
