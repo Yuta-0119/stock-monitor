@@ -163,16 +163,27 @@ class BQLoader:
             logger.info("Done")
 
     def get_latest_date(self, table_id: str, date_column: str = "date") -> str | None:
-        """テーブルの最新日付を取得"""
+        """Return MAX(date_column) as 'YYYY-MM-DD' or None if empty / errored.
+
+        Uses the row iterator (not .to_dataframe()) to avoid the pandas-gbq /
+        db-dtypes dependency chain that silently fails inside GitHub Actions
+        runners. Failures are still logged so partial-progress is diagnosable
+        instead of vanishing into a swallowed exception.
+        """
+        import logging as _lg
+        _log = _lg.getLogger(__name__)
         full_table = f"{self.project}.{table_id}"
         try:
-            sql = f"SELECT MAX({date_column}) as max_date FROM `{full_table}`"
-            result = self.client.query(sql).to_dataframe()
-            max_date = result["max_date"].iloc[0]
-            if pd.isna(max_date):
+            sql = f"SELECT MAX({date_column}) AS max_date FROM `{full_table}`"
+            rows = list(self.client.query(sql).result())
+            if not rows:
                 return None
-            return str(max_date)
-        except Exception:
+            max_date = rows[0][0]  # value of MAX(...)
+            if max_date is None:
+                return None
+            return str(max_date)[:10]  # 'YYYY-MM-DD' (handles date / datetime / Timestamp)
+        except Exception as e:
+            _log.warning("get_latest_date(%s, %s) failed: %s", table_id, date_column, e)
             return None
 
     def table_exists(self, table_id: str) -> bool:
