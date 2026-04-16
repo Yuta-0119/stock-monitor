@@ -115,16 +115,16 @@ def _short_selling_one_day(client: JQuantsClient, loader: BQLoader, config,
     logger.info("short_selling %s incoming columns: %s", target_date, list(df.columns))
     # J-Quants now returns short-form column names. Support both for backward compatibility.
     col_map = {
-        # Long form (legacy)
+        # Long form (legacy J-Quants response)
         "Date": "date", "Sector33Code": "sector33_code",
-        "SellingValue": "selling_value",
-        "ShortSellingWithRestrictionsValue": "short_selling_with_restrictions_value",
-        "ShortSellingWithoutRestrictionsValue": "short_selling_without_restrictions_value",
-        # Short form (current)
+        "SellingValue": "sell_excluding_short_value",
+        "ShortSellingWithRestrictionsValue": "short_with_restriction_value",
+        "ShortSellingWithoutRestrictionsValue": "short_no_restriction_value",
+        # Short form (current J-Quants response)
         "S33": "sector33_code",
-        "SellExShortVa": "selling_value",
-        "ShrtWithResVa": "short_selling_with_restrictions_value",
-        "ShrtNoResVa": "short_selling_without_restrictions_value",
+        "SellExShortVa": "sell_excluding_short_value",
+        "ShrtWithResVa": "short_with_restriction_value",
+        "ShrtNoResVa": "short_no_restriction_value",
     }
     rename = {k: v for k, v in col_map.items() if k in df.columns}
     df = df.rename(columns=rename)

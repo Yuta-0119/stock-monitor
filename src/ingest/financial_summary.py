@@ -91,7 +91,9 @@ def _ingest_one_day(client: JQuantsClient, loader: BQLoader, config,
     # transition). pandas would otherwise raise on .merge.
     df = df.loc[:, ~df.columns.duplicated()]
 
-    keep = [v for v in unified_map.values() if v in df.columns and not v.startswith("_")]
+    # Deduplicate target column names; multiple source aliases can map to the same target,
+    # which would make df[keep] request the same column twice and raise pandas.errors.InvalidIndexError.
+    keep = list(dict.fromkeys(v for v in unified_map.values() if v in df.columns and not v.startswith("_")))
     df = df[keep]
     if "disclosed_date" not in df.columns:
         # Without the merge key the BQ MERGE is guaranteed to 400; log loudly and skip.
