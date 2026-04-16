@@ -65,7 +65,7 @@ jobs:
       - name: Step 1 - Data ingestion (daily + minute)
         run: |
           set +e
-          MODE='${{ github.event.inputs.mode || ''daily'' }}'
+          MODE="${{ github.event.inputs.mode || 'daily' }}"
           for attempt in 1 2 3; do
             echo "::group::Step 1 attempt ${attempt}/3"
             python -m src.main --mode "${MODE}"
