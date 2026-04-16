@@ -50,15 +50,61 @@ def ingest_margin_interest(client: JQuantsClient, loader: BQLoader, config,
 
 
 def ingest_short_selling(client: JQuantsClient, loader: BQLoader, config,
-                         target_date: str | None = None) -> int:
-    """業種別空売り比率の取込み（Standard以上）"""
-    if target_date is None:
-        latest = loader.get_latest_date(f"{config.ds_raw}.short_selling_ratio")
-        if latest:
-            next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
-            target_date = next_date.strftime("%Y%m%d")
+                         target_date: str | None = None,
+                         max_catchup_days: int = 30) -> int:
+    """Sector short-selling ratio update with catch-up loop.
 
-    data = client.get_short_selling_ratio(date=target_date)
+    target_date is not None -> single-day ingest (legacy).
+    target_date is None     -> loop from BQ latest+1 to today (JST).
+    """
+    if target_date is not None:
+        return _short_selling_one_day(client, loader, config, target_date)
+
+    latest = loader.get_latest_date(f"{config.ds_raw}.short_selling_ratio")
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    if latest:
+        start = datetime.strptime(latest, "%Y-%m-%d").date() + timedelta(days=1)
+    else:
+        start = today
+    if start > today:
+        logger.info("short_selling_ratio already up to date (latest=%s)", latest)
+        return 0
+
+    span = (today - start).days + 1
+    if span > max_catchup_days:
+        logger.warning(
+            "short_selling_ratio catch-up span %d > cap %d, limiting", span, max_catchup_days,
+        )
+        start = today - timedelta(days=max_catchup_days - 1)
+
+    total = 0
+    cur = start
+    days_done = 0
+    while cur <= today:
+        ymd = cur.strftime("%Y%m%d")
+        try:
+            n = _short_selling_one_day(client, loader, config, ymd)
+            total += n
+        except Exception as e:
+            logger.warning("short_selling day %s failed: %s -- continuing", ymd, e)
+        days_done += 1
+        cur += timedelta(days=1)
+    logger.info("short_selling_ratio catch-up: %d rows over %d days", total, days_done)
+    return total
+
+
+def _short_selling_one_day(client: JQuantsClient, loader: BQLoader, config,
+                           target_date: str) -> int:
+    """Single-day ingest. Swallows 400 (holiday)."""
+    try:
+        data = client.get_short_selling_ratio(date=target_date)
+    except Exception as e:
+        # J-Quants returns 400 for holidays / no-data days
+        msg = str(e)
+        if "400" in msg:
+            logger.info(f"No short_selling for {target_date} (400 - holiday)")
+            return 0
+        raise
     if not data:
         return 0
 
@@ -81,7 +127,6 @@ def ingest_short_selling(client: JQuantsClient, loader: BQLoader, config,
         merge_keys=["date", "sector33_code"],
         staging_table=f"{config.ds_raw}.short_selling_ratio_staging",
     )
-
 
 def ingest_investor_types(client: JQuantsClient, loader: BQLoader, config,
                           from_date: str | None = None,

@@ -1,7 +1,14 @@
 name: Daily Stock Data Ingestion
 on:
   schedule:
-    - cron: '30 7 * * 1-5'  # 16:30 JST (UTC+9)
+    # Primary run: 17:00 JST = 08:00 UTC, weekdays.
+    # End-of-day data is published 16:00-16:30 JST, so 17:00 leaves a 30 min
+    # buffer + GHA jitter (~15-30 min) so completion lands ~18:00-18:30 JST.
+    - cron: '0 8 * * 1-5'
+    # Safety-net run: 06:00 JST = 21:00 UTC the previous day, Mon-Fri JST.
+    # Catches anything the primary run missed (J-Quants late publish, GHA outage)
+    # and runs at least 3 hours before the 09:00 market open the next morning.
+    - cron: '0 21 * * 0-4'
   workflow_dispatch:
     inputs:
       mode:
@@ -17,6 +24,11 @@ on:
           - init
           - check
           - setup
+
+# Avoid two scheduled runs stomping each other if a long primary run overlaps the safety-net.
+concurrency:
+  group: daily-ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:
@@ -46,15 +58,43 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      # ────────────────────────────────────────────────────────────
+      # Core ingest — wrapped in 3-attempt retry to ride out transient
+      # J-Quants 5xx and BigQuery rate-limits.
+      # ────────────────────────────────────────────────────────────
       - name: Step 1 - Data ingestion (daily + minute)
-        run: python -m src.main --mode ${{ github.event.inputs.mode || 'daily' }}
+        run: |
+          set +e
+          MODE='${{ github.event.inputs.mode || ''daily'' }}'
+          for attempt in 1 2 3; do
+            echo "::group::Step 1 attempt ${attempt}/3"
+            python -m src.main --mode "${MODE}"
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -eq 0 ]; then exit 0; fi
+            echo "Step 1 attempt ${attempt} failed (rc=${rc}); sleeping before retry..."
+            sleep $((30 * attempt))
+          done
+          exit $rc
 
       - name: Step 2 - Analytics Layer
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
-        run: python -m src.main --mode analytics
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            echo "::group::Step 2 attempt ${attempt}/3"
+            python -m src.main --mode analytics
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -eq 0 ]; then exit 0; fi
+            echo "Step 2 attempt ${attempt} failed (rc=${rc}); sleeping before retry..."
+            sleep $((20 * attempt))
+          done
+          exit $rc
 
       - name: Step 2b - Cache refresh (all tables)
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        continue-on-error: true   # cache refresh is regenerable; do not fail the run
         run: python scripts/refresh_cache.py
 
       - name: Step 3a - Holdings sync
@@ -64,18 +104,61 @@ jobs:
 
       - name: Step 3b - External prices
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        continue-on-error: true   # third-party endpoint, optional for trading logic
         run: python scripts/fetch_external_prices.py
 
       - name: Step 4 - Google Sheets export
         if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        continue-on-error: true   # spreadsheet is operational, not load-bearing
         run: python -m src.main --mode export
+
+      # ────────────────────────────────────────────────────────────
+      # Freshness verification — fail loudly if BigQuery data is older
+      # than the previous trading day. Catches silent partial failures
+      # where the workflow "succeeded" but tables are stale.
+      # ────────────────────────────────────────────────────────────
+      - name: Step 5 - Freshness verification
+        if: ${{ github.event.inputs.mode == 'daily' || github.event_name == 'schedule' }}
+        continue-on-error: true   # report only — don't fail the whole run on freshness alone
+        run: |
+          python - <<'PY'
+          from datetime import date, timedelta
+          from google.cloud import bigquery
+          import os
+
+          today = date.today()
+          # Previous business day (Mon -> Fri, else -1)
+          d = today - timedelta(days=1)
+          while d.weekday() >= 5:
+              d -= timedelta(days=1)
+          T_prev = d
+
+          client = bigquery.Client(project=os.environ["BQ_PROJECT"])
+          checks = [
+              ("raw.stock_prices_daily",   "date",           T_prev),
+              ("raw.stock_prices_minute",  "date",           T_prev),
+              ("raw.index_prices_daily",   "date",           T_prev),
+              ("raw.financial_summary",    "disclosed_date", T_prev - timedelta(days=14)),
+              ("raw.short_selling_ratio",  "date",           T_prev - timedelta(days=14)),
+          ]
+          stale = []
+          for tbl, col, expected in checks:
+              q = f"SELECT MAX({col}) AS d FROM `onitsuka-app.{tbl}`"
+              latest = list(client.query(q).result())[0].d
+              status = "FRESH" if (latest and latest >= expected) else "STALE"
+              print(f"  {tbl:35s} latest={latest}  expected>={expected}  [{status}]")
+              if status == "STALE":
+                  stale.append(tbl)
+          if stale:
+              print("Stale tables:", stale)
+          PY
 
       - name: Notify success
         if: success() && (github.event_name == 'schedule' || github.event.inputs.mode == 'daily')
         run: |
           curl -s -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
-            -d '{"attachments":[{"color":"good","text":"ETL Daily Update completed successfully (GitHub Actions)"}]}'
+            -d '{"attachments":[{"color":"good","text":"ETL Daily Update completed (GitHub Actions)"}]}'
 
       - name: Notify failure
         if: failure()

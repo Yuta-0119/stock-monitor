@@ -63,26 +63,14 @@ COLUMN_MAP_BULK = {
 }
 
 
-def ingest(client: JQuantsClient, loader: BQLoader, config,
-           target_date: str | None = None) -> int:
-    """財務サマリーの日次更新
-
-    Args:
-        target_date: 開示日（YYYYMMDD）。Noneなら最新日を自動判定
-    """
-    if target_date is None:
-        latest = loader.get_latest_date(
-            f"{config.ds_raw}.financial_summary", "disclosed_date"
-        )
-        if latest:
-            next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
-            target_date = next_date.strftime("%Y%m%d")
-
+def _ingest_one_day(client: JQuantsClient, loader: BQLoader, config,
+                    target_date: str) -> int:
+    """Single-day fetch (YYYYMMDD). Swallows 400 (holiday/no disclosure)."""
     try:
         data = client.get_financial_summary(date=target_date)
     except requests.exceptions.HTTPError as e:
-        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 400:
-            logger.info(f"No financial data for {target_date} (400 Bad Request - holiday or no disclosure)")
+        if hasattr(e, "response") and e.response is not None and e.response.status_code == 400:
+            logger.info(f"No financial data for {target_date} (400 - holiday or no disclosure)")
             return 0
         raise
     if not data:
@@ -93,7 +81,6 @@ def ingest(client: JQuantsClient, loader: BQLoader, config,
     rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
     df = df.rename(columns=rename)
 
-    # 不要カラム除外
     keep = [v for v in COLUMN_MAP.values() if v in df.columns and not v.startswith("_")]
     df = df[keep]
 
@@ -102,7 +89,6 @@ def ingest(client: JQuantsClient, loader: BQLoader, config,
     if "disclosed_date" in df.columns:
         df["disclosed_date"] = pd.to_datetime(df["disclosed_date"]).dt.date
 
-    # 数値カラムの型変換
     numeric_cols = [
         "net_sales", "operating_profit", "ordinary_profit", "profit",
         "earnings_per_share", "diluted_earnings_per_share",
@@ -123,6 +109,57 @@ def ingest(client: JQuantsClient, loader: BQLoader, config,
         staging_table=f"{config.ds_raw}.financial_summary_staging",
     )
 
+
+def ingest(client: JQuantsClient, loader: BQLoader, config,
+           target_date: str | None = None,
+           max_catchup_days: int = 30) -> int:
+    """Daily financial-summary update with auto catch-up loop.
+
+    target_date is not None -> ingest just that day (legacy behavior).
+    target_date is None     -> loop from BQ latest+1 to today (JST), one
+                               day at a time. Empty days are silently
+                               skipped, so multi-day gaps fill themselves.
+
+    The previous implementation only tried a single day after the latest,
+    so a holiday or disclosure-less day froze the table forever.
+    """
+    if target_date is not None:
+        return _ingest_one_day(client, loader, config, target_date)
+
+    latest = loader.get_latest_date(
+        f"{config.ds_raw}.financial_summary", "disclosed_date"
+    )
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    if latest:
+        start = datetime.strptime(latest, "%Y-%m-%d").date() + timedelta(days=1)
+    else:
+        start = today
+    if start > today:
+        logger.info("financial_summary already up to date (latest=%s)", latest)
+        return 0
+
+    span = (today - start).days + 1
+    if span > max_catchup_days:
+        logger.warning(
+            "financial_summary catch-up span %d > cap %d, limiting to last %d days",
+            span, max_catchup_days, max_catchup_days,
+        )
+        start = today - timedelta(days=max_catchup_days - 1)
+
+    total = 0
+    cur = start
+    days_done = 0
+    while cur <= today:
+        ymd = cur.strftime("%Y%m%d")
+        try:
+            n = _ingest_one_day(client, loader, config, ymd)
+            total += n
+        except Exception as e:
+            logger.warning("financial_summary day %s failed: %s -- continuing", ymd, e)
+        days_done += 1
+        cur += timedelta(days=1)
+    logger.info("financial_summary catch-up: %d rows over %d days", total, days_done)
+    return total
 
 def ingest_bulk(client: JQuantsClient, loader: BQLoader, config) -> int:
     """CSVまたはAPIで全期間の財務サマリーを取得"""
