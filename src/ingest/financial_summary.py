@@ -80,10 +80,18 @@ def _ingest_one_day(client: JQuantsClient, loader: BQLoader, config,
     df = pd.DataFrame(data)
     # Surface the actual column set so we can diagnose silent J-Quants schema drift
     logger.info("financial_summary %s incoming columns: %s", target_date, list(df.columns))
-    rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
+    # J-Quants /fins/summary now returns the short-form column names (DiscDate, DocType, etc.)
+    # that previously only appeared in the bulk CSV download. Build a unified rename map by
+    # layering both, with the long-form taking precedence if both happen to be present.
+    unified_map = {**COLUMN_MAP_BULK, **COLUMN_MAP}
+    rename = {k: v for k, v in unified_map.items() if k in df.columns}
     df = df.rename(columns=rename)
 
-    keep = [v for v in COLUMN_MAP.values() if v in df.columns and not v.startswith("_")]
+    # Deduplicate columns (a single column might exist under both names after a server-side
+    # transition). pandas would otherwise raise on .merge.
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    keep = [v for v in unified_map.values() if v in df.columns and not v.startswith("_")]
     df = df[keep]
     if "disclosed_date" not in df.columns:
         # Without the merge key the BQ MERGE is guaranteed to 400; log loudly and skip.

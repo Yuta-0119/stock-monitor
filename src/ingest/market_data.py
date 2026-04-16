@@ -113,15 +113,23 @@ def _short_selling_one_day(client: JQuantsClient, loader: BQLoader, config,
 
     df = pd.DataFrame(data)
     logger.info("short_selling %s incoming columns: %s", target_date, list(df.columns))
+    # J-Quants now returns short-form column names. Support both for backward compatibility.
     col_map = {
+        # Long form (legacy)
         "Date": "date", "Sector33Code": "sector33_code",
         "SellingValue": "selling_value",
         "ShortSellingWithRestrictionsValue": "short_selling_with_restrictions_value",
         "ShortSellingWithoutRestrictionsValue": "short_selling_without_restrictions_value",
+        # Short form (current)
+        "S33": "sector33_code",
+        "SellExShortVa": "selling_value",
+        "ShrtWithResVa": "short_selling_with_restrictions_value",
+        "ShrtNoResVa": "short_selling_without_restrictions_value",
     }
     rename = {k: v for k, v in col_map.items() if k in df.columns}
     df = df.rename(columns=rename)
-    keep = [v for v in col_map.values() if v in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
+    keep = [v for v in dict.fromkeys(col_map.values()) if v in df.columns]
     df = df[keep]
     if "sector33_code" not in df.columns or "date" not in df.columns:
         logger.warning(
