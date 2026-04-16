@@ -78,11 +78,20 @@ def _ingest_one_day(client: JQuantsClient, loader: BQLoader, config,
         return 0
 
     df = pd.DataFrame(data)
+    # Surface the actual column set so we can diagnose silent J-Quants schema drift
+    logger.info("financial_summary %s incoming columns: %s", target_date, list(df.columns))
     rename = {k: v for k, v in COLUMN_MAP.items() if k in df.columns}
     df = df.rename(columns=rename)
 
     keep = [v for v in COLUMN_MAP.values() if v in df.columns and not v.startswith("_")]
     df = df[keep]
+    if "disclosed_date" not in df.columns:
+        # Without the merge key the BQ MERGE is guaranteed to 400; log loudly and skip.
+        logger.warning(
+            "financial_summary %s: response missing disclosed_date after rename (cols=%s) -- skipping",
+            target_date, list(df.columns),
+        )
+        return 0
 
     if "code" in df.columns:
         df["code"] = df["code"].astype(str).str.zfill(5)

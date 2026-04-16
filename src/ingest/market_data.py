@@ -112,6 +112,7 @@ def _short_selling_one_day(client: JQuantsClient, loader: BQLoader, config,
         return 0
 
     df = pd.DataFrame(data)
+    logger.info("short_selling %s incoming columns: %s", target_date, list(df.columns))
     col_map = {
         "Date": "date", "Sector33Code": "sector33_code",
         "SellingValue": "selling_value",
@@ -122,6 +123,12 @@ def _short_selling_one_day(client: JQuantsClient, loader: BQLoader, config,
     df = df.rename(columns=rename)
     keep = [v for v in col_map.values() if v in df.columns]
     df = df[keep]
+    if "sector33_code" not in df.columns or "date" not in df.columns:
+        logger.warning(
+            "short_selling %s: missing merge-key columns after rename (cols=%s) -- skipping",
+            target_date, list(df.columns),
+        )
+        return 0
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date
 
