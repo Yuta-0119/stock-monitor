@@ -62,13 +62,16 @@ def ingest_short_selling(client: JQuantsClient, loader: BQLoader, config,
 
     latest = loader.get_latest_date(f"{config.ds_raw}.short_selling_ratio")
     today = (datetime.utcnow() + timedelta(hours=9)).date()
+    logger.info("short_selling_ratio BQ latest date = %r (today=%s)", latest, today)
     if latest:
-        start = datetime.strptime(latest, "%Y-%m-%d").date() + timedelta(days=1)
+        latest_str = str(latest)[:10]
+        start = datetime.strptime(latest_str, "%Y-%m-%d").date() + timedelta(days=1)
     else:
         start = today
     if start > today:
         logger.info("short_selling_ratio already up to date (latest=%s)", latest)
         return 0
+    logger.info("short_selling_ratio catch-up window: %s -> %s", start, today)
 
     span = (today - start).days + 1
     if span > max_catchup_days:

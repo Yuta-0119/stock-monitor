@@ -130,13 +130,18 @@ def ingest(client: JQuantsClient, loader: BQLoader, config,
         f"{config.ds_raw}.financial_summary", "disclosed_date"
     )
     today = (datetime.utcnow() + timedelta(hours=9)).date()
+    logger.info("financial_summary BQ latest disclosed_date = %r (today=%s)", latest, today)
     if latest:
-        start = datetime.strptime(latest, "%Y-%m-%d").date() + timedelta(days=1)
+        # get_latest_date may return either 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS' depending on
+        # whether pandas materialised as date or Timestamp. Take the first 10 chars to be safe.
+        latest_str = str(latest)[:10]
+        start = datetime.strptime(latest_str, "%Y-%m-%d").date() + timedelta(days=1)
     else:
         start = today
     if start > today:
         logger.info("financial_summary already up to date (latest=%s)", latest)
         return 0
+    logger.info("financial_summary catch-up window: %s -> %s", start, today)
 
     span = (today - start).days + 1
     if span > max_catchup_days:
