@@ -107,34 +107,43 @@ class BQLoader:
         staging = staging_table or f"{target_table}_staging"
         full_staging = f"{self.project}.{staging}"
 
-        # 1. ステージングテーブルに書込み
+        # 1. ステージングテーブルに書込み (autodetect)
+        # pandas float64 -> BQ FLOAT64 etc. The MERGE step below SAFE_CASTs back
+        # to the target column types, which avoids the pyarrow limitation that
+        # cannot directly convert pandas float64 -> BQ NUMERIC during load.
+        self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
+
+        # If match_target_schema requested, fetch target column types so the
+        # MERGE SQL can SAFE_CAST FLOAT staging values into NUMERIC target slots.
+        col_types: dict[str, str] = {}
         if match_target_schema:
             try:
                 target_schema_full = self.client.get_table(full_target).schema
-                df_cols = set(df.columns)
-                # Restrict to columns actually present in df, preserving target column order
-                matched_schema = [s for s in target_schema_full if s.name in df_cols]
-                self.load_dataframe(
-                    df, staging, write_disposition="WRITE_TRUNCATE", schema=matched_schema,
-                )
+                col_types = {s.name: s.field_type for s in target_schema_full}
             except Exception as e:
                 logger.warning(
-                    f"match_target_schema failed for {target_table}: {e} -- falling back to autodetect"
+                    f"match_target_schema schema fetch failed for {target_table}: {e}"
                 )
-                self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
-        else:
-            self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
 
         # 2. MERGE実行
+        # Helper: wrap S.<col> in SAFE_CAST when target type needs it.
+        # Common float64 -> NUMERIC / BIGNUMERIC conversion happens here.
+        _CAST_TYPES = {"NUMERIC", "BIGNUMERIC", "DECIMAL", "BIGDECIMAL"}
+        def _src_ref(col: str) -> str:
+            t = col_types.get(col, "")
+            if t in _CAST_TYPES:
+                return f"SAFE_CAST(S.`{col}` AS {t})"
+            return f"S.`{col}`"
+
         on_clause = " AND ".join(
-            [f"T.`{k}` = S.`{k}`" for k in merge_keys]
+            [f"T.`{k}` = {_src_ref(k)}" for k in merge_keys]
         )
         update_cols = [c for c in df.columns if c not in merge_keys]
         insert_cols = ", ".join([f"`{c}`" for c in df.columns])
-        insert_vals = ", ".join([f"S.`{c}`" for c in df.columns])
+        insert_vals = ", ".join([_src_ref(c) for c in df.columns])
 
         if update_cols:
-            update_clause = ", ".join([f"T.`{c}` = S.`{c}`" for c in update_cols])
+            update_clause = ", ".join([f"T.`{c}` = {_src_ref(c)}" for c in update_cols])
             when_matched = f"UPDATE SET {update_clause}"
         else:
             # 全カラムがmerge_keyの場合: 重複行は無視（自己代入で実質no-op）
