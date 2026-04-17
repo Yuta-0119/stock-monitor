@@ -267,6 +267,7 @@ def _ingest_one_day(client: JQuantsClient, loader: BQLoader, config,
         f"{config.ds_raw}.financial_summary",
         merge_keys=["disclosed_date", "code", "document_type"],
         staging_table=f"{config.ds_raw}.financial_summary_staging",
+        match_target_schema=True,  # NUMERIC vs FLOAT mismatch protection
     )
 
 

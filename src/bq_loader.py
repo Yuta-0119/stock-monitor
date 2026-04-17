@@ -77,17 +77,20 @@ class BQLoader:
         target_table: str,
         merge_keys: list[str],
         staging_table: str | None = None,
+        match_target_schema: bool = False,
     ) -> int:
         """MERGE方式でのUPSERT（重複回避）
-
-        ターゲットテーブルが存在しない場合は WRITE_APPEND で新規作成。
-        存在する場合は一時テーブル経由でMERGEする。
 
         Args:
             df: 書込むデータ
             target_table: ターゲットテーブルID (dataset.table)
             merge_keys: MERGE条件のカラム名リスト
             staging_table: 一時テーブル名（省略時は自動生成）
+            match_target_schema: True なら staging を target と同じカラム型で作成。
+                pandas auto-detect だと float64 → BQ FLOAT64 になり、target が
+                NUMERIC のとき MERGE で型衝突する。これを回避するため target
+                スキーマを取得して staging に強制コピーする。
+                既存呼び出し側に影響を与えないようデフォルトは False。
 
         Returns:
             処理行数
@@ -105,7 +108,22 @@ class BQLoader:
         full_staging = f"{self.project}.{staging}"
 
         # 1. ステージングテーブルに書込み
-        self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
+        if match_target_schema:
+            try:
+                target_schema_full = self.client.get_table(full_target).schema
+                df_cols = set(df.columns)
+                # Restrict to columns actually present in df, preserving target column order
+                matched_schema = [s for s in target_schema_full if s.name in df_cols]
+                self.load_dataframe(
+                    df, staging, write_disposition="WRITE_TRUNCATE", schema=matched_schema,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"match_target_schema failed for {target_table}: {e} -- falling back to autodetect"
+                )
+                self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
+        else:
+            self.load_dataframe(df, staging, write_disposition="WRITE_TRUNCATE")
 
         # 2. MERGE実行
         on_clause = " AND ".join(
