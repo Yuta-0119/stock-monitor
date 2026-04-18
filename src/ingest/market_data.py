@@ -9,15 +9,70 @@ logger = logging.getLogger(__name__)
 
 
 def ingest_margin_interest(client: JQuantsClient, loader: BQLoader, config,
-                           target_date: str | None = None) -> int:
-    """信用取引週末残高の取込み（Standard以上）"""
-    if target_date is None:
-        latest = loader.get_latest_date(f"{config.ds_raw}.margin_interest")
-        if latest:
-            next_date = datetime.strptime(latest, "%Y-%m-%d") + timedelta(days=1)
-            target_date = next_date.strftime("%Y%m%d")
+                           target_date: str | None = None,
+                           max_catchup_days: int = 30) -> int:
+    """信用取引週末残高の取込み（Standard以上）.
 
-    data = client.get_margin_interest(date=target_date)
+    target_date is not None -> single-day ingest (legacy).
+    target_date is None     -> loop from BQ latest+1 to today (JST). If the
+                                BQ table doesn't exist yet (initial run), use
+                                today as the starting point. This mirrors the
+                                short_selling catch-up pattern so the first
+                                run — which triggers a 404 on get_latest_date —
+                                can't crash with `date=None`.
+    """
+    if target_date is not None:
+        return _margin_interest_one_day(client, loader, config, target_date)
+
+    latest = loader.get_latest_date(f"{config.ds_raw}.margin_interest")
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    logger.info("margin_interest BQ latest date = %r (today=%s)", latest, today)
+    if latest:
+        latest_str = str(latest)[:10]
+        start = datetime.strptime(latest_str, "%Y-%m-%d").date() + timedelta(days=1)
+    else:
+        # Initial run (table missing) — just hit today; the API returns
+        # the most recent week-end balance.
+        start = today
+    if start > today:
+        logger.info("margin_interest already up to date (latest=%s)", latest)
+        return 0
+
+    span = (today - start).days + 1
+    if span > max_catchup_days:
+        logger.warning(
+            "margin_interest catch-up span %d > cap %d, limiting",
+            span, max_catchup_days,
+        )
+        start = today - timedelta(days=max_catchup_days - 1)
+
+    total = 0
+    cur = start
+    days_done = 0
+    while cur <= today:
+        ymd = cur.strftime("%Y%m%d")
+        try:
+            n = _margin_interest_one_day(client, loader, config, ymd)
+            total += n
+        except Exception as e:
+            logger.warning("margin_interest day %s failed: %s -- continuing", ymd, e)
+        days_done += 1
+        cur += timedelta(days=1)
+    logger.info("margin_interest catch-up: %d rows over %d days", total, days_done)
+    return total
+
+
+def _margin_interest_one_day(client: JQuantsClient, loader: BQLoader, config,
+                             target_date: str) -> int:
+    """Single-day ingest. Swallows 400 (no data for that date)."""
+    try:
+        data = client.get_margin_interest(date=target_date)
+    except Exception as e:
+        msg = str(e)
+        if "400" in msg:
+            logger.info(f"No margin_interest for {target_date} (400 - no data)")
+            return 0
+        raise
     if not data:
         return 0
 
