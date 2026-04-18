@@ -245,6 +245,30 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
         logger.warning(f"ingest_trading_calendar skipped: {e}")
         results["trading_calendar"] = 0
 
+    # 11. 日経225オプション (Standard+)
+    from src.ingest.derivatives import ingest_index_options_225
+    try:
+        results["index_options_225"] = ingest_index_options_225(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_index_options_225 skipped: {e}")
+        results["index_options_225"] = 0
+
+    # 12. 空売り残高報告 (Standard+)
+    from src.ingest.market_data import ingest_short_sale_report
+    try:
+        results["short_sale_report"] = ingest_short_sale_report(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_short_sale_report skipped: {e}")
+        results["short_sale_report"] = 0
+
+    # 13. 日々公表信用取引残高 (Standard+)
+    from src.ingest.market_data import ingest_daily_margin_interest
+    try:
+        results["daily_margin_interest"] = ingest_daily_margin_interest(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_daily_margin_interest skipped: {e}")
+        results["daily_margin_interest"] = 0
+
     logger.info("=== 初期ロード結果 ===")
     for name, count in results.items():
         logger.info(f"  {name}: {count:,} rows")
@@ -311,6 +335,30 @@ def run_daily(client: JQuantsClient, loader: BQLoader, config: Config):
     except Exception as e:
         logger.warning(f"ingest_trading_calendar skipped: {e}")
         results["trading_calendar"] = 0
+
+    # 9. 日経225オプション四本値 (Standard+)
+    from src.ingest.derivatives import ingest_index_options_225
+    try:
+        results["index_options_225"] = ingest_index_options_225(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_index_options_225 skipped: {e}")
+        results["index_options_225"] = 0
+
+    # 10. 空売り残高報告 (Standard+)
+    from src.ingest.market_data import ingest_short_sale_report
+    try:
+        results["short_sale_report"] = ingest_short_sale_report(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_short_sale_report skipped: {e}")
+        results["short_sale_report"] = 0
+
+    # 11. 日々公表信用取引残高 (Standard+)
+    from src.ingest.market_data import ingest_daily_margin_interest
+    try:
+        results["daily_margin_interest"] = ingest_daily_margin_interest(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_daily_margin_interest skipped: {e}")
+        results["daily_margin_interest"] = 0
 
     logger.info("=== 日次バッチ結果 ===")
     total = 0
