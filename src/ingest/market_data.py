@@ -279,26 +279,76 @@ def ingest_investor_types(client: JQuantsClient, loader: BQLoader, config,
 
 
 def ingest_earnings_calendar(client: JQuantsClient, loader: BQLoader, config) -> int:
-    """決算発表予定日の取込み（全件洗い替え）"""
+    """決算発表予定日の取込み（全件洗い替え）。
+
+    J-Quants `/equities/earnings-calendar` は「発表予定」のフォワード
+    スナップショットを返す (過去の履歴ではない)。WRITE_TRUNCATE が
+    正しい書込モード。
+
+    V2 レスポンス フィールドは短縮形 (CoName / FY / FQ / SectorNm /
+    Section)。legacy 長形 (CompanyName / FiscalYearEnd) も別マップで
+    受理しておく。
+    """
+    from datetime import datetime as _dt, timezone as _tz
     data = client.get_earnings_calendar()
     if not data:
+        logger.info("earnings_calendar: empty response (no upcoming announcements)")
         return 0
 
     df = pd.DataFrame(data)
     col_map = {
-        "Code": "code", "CompanyName": "company_name",
-        "Date": "date", "FiscalYearEnd": "fiscal_year_end",
+        # Common
+        "Date": "date",
+        "Code": "code",
+        # V2 short form (current)
+        "CoName": "company_name",
+        "FY": "fiscal_year",
+        "FQ": "fiscal_quarter",
+        "SectorNm": "sector_name",
+        "Section": "section",
+        # Legacy long form (kept for forward/backward compat)
+        "CompanyName": "company_name",
+        "FiscalYearEnd": "fiscal_year",
     }
     rename = {k: v for k, v in col_map.items() if k in df.columns}
     df = df.rename(columns=rename)
-    keep = [v for v in col_map.values() if v in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
+    keep = list(dict.fromkeys(v for v in col_map.values() if v in df.columns))
     df = df[keep]
     if "code" in df.columns:
         df["code"] = df["code"].astype(str).str.zfill(5)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["_fetched_at"] = pd.Timestamp(_dt.now(_tz.utc))
 
     return loader.load_dataframe(
         df, f"{config.ds_raw}.earnings_calendar",
+        write_disposition="WRITE_TRUNCATE",
+    )
+
+
+def ingest_trading_calendar(client: JQuantsClient, loader: BQLoader, config) -> int:
+    """取引カレンダーの取込み（/markets/calendar, 全件洗い替え）。
+
+    J-Quants は 2016-04 以降〜翌年末までの holiday division を 1 レスポンス
+    で返す（~4,200 行）。WRITE_TRUNCATE で定期的にフルリフレッシュする。
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    data = client.get_trading_calendar()
+    if not data:
+        logger.info("trading_calendar: empty response")
+        return 0
+
+    df = pd.DataFrame(data)
+    df = df.rename(columns={"Date": "date", "HolDiv": "hol_div"})
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+    if "hol_div" in df.columns:
+        df["hol_div"] = df["hol_div"].astype(str)
+    df["_fetched_at"] = pd.Timestamp(_dt.now(_tz.utc))
+    df = df.drop_duplicates(subset=["date"]).sort_values("date")
+
+    return loader.load_dataframe(
+        df, f"{config.ds_raw}.trading_calendar",
         write_disposition="WRITE_TRUNCATE",
     )

@@ -161,18 +161,38 @@ class JQuantsClient:
 
     # ─── Index ───────────────────────────────────────────────
 
-    def get_indices(self, from_date: str | None = None,
+    def get_indices(self, date: str | None = None,
+                    from_date: str | None = None,
                     to_date: str | None = None,
-                    index_code: str | None = None) -> list[dict]:
-        """指数四本値を取得（Standard以上）"""
-        params = {}
+                    code: str | None = None) -> list[dict]:
+        """指数四本値を取得（Standard以上）。
+
+        J-Quants API spec (v2): `/indices/bars/daily` requires AT LEAST ONE of
+        `date` or `code`. Supplying `from`/`to` alone returns 400.
+
+        Call patterns:
+          - date="YYYYMMDD"                   → all ~79 indices for that date
+          - code="XXXX" + from/to             → one index over a range
+          - code="XXXX" (no range)            → one index, full history
+        """
+        params: dict = {}
+        if date:
+            params["date"] = date
+        if code:
+            params["code"] = code
         if from_date:
             params["from"] = from_date
         if to_date:
             params["to"] = to_date
-        if index_code:
-            params["index_code"] = index_code
-        logger.info(f"Fetching indices (from={from_date}, to={to_date})")
+        if not (date or code):
+            raise ValueError(
+                "get_indices requires at least one of 'date' or 'code' — "
+                "the J-Quants API rejects queries without either parameter."
+            )
+        logger.info(
+            f"Fetching indices (date={date}, code={code}, "
+            f"from={from_date}, to={to_date})"
+        )
         return self._get_all_pages("/indices/bars/daily", params)
 
     # ─── Margin Interest ─────────────────────────────────────
