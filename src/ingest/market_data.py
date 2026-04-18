@@ -90,8 +90,13 @@ def _margin_interest_one_day(client: JQuantsClient, loader: BQLoader, config,
         return 0
 
     df = pd.DataFrame(data)
+    # J-Quants v2 returns short-form column names (schema drift 2026-04).
+    # Support both legacy long-form and current short-form; the Value columns
+    # are no longer returned but we keep the mapping for forward-compat.
     col_map = {
+        # Common
         "Date": "date", "Code": "code",
+        # Legacy long-form (kept for backward compat)
         "LongMarginTradeVolume": "long_margin_trade_volume",
         "LongMarginTradeValue": "long_margin_trade_value",
         "ShortMarginTradeVolume": "short_margin_trade_volume",
@@ -100,10 +105,19 @@ def _margin_interest_one_day(client: JQuantsClient, loader: BQLoader, config,
         "LongNegotiableMarginTradeValue": "long_negotiable_margin_trade_value",
         "ShortNegotiableMarginTradeVolume": "short_negotiable_margin_trade_volume",
         "ShortNegotiableMarginTradeValue": "short_negotiable_margin_trade_value",
+        # Current short-form (2026-04+)
+        "LongVol": "long_margin_trade_volume",
+        "ShrtVol": "short_margin_trade_volume",
+        "LongNegVol": "long_negotiable_margin_trade_volume",
+        "ShrtNegVol": "short_negotiable_margin_trade_volume",
+        "LongStdVol": "long_standard_margin_trade_volume",
+        "ShrtStdVol": "short_standard_margin_trade_volume",
+        "IssType": "issue_type",
     }
     rename = {k: v for k, v in col_map.items() if k in df.columns}
     df = df.rename(columns=rename)
-    keep = [v for v in col_map.values() if v in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()]
+    keep = [v for v in dict.fromkeys(col_map.values()) if v in df.columns]
     df = df[keep]
     if "code" in df.columns:
         df["code"] = df["code"].astype(str).str.zfill(5)
