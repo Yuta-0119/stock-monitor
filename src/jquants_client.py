@@ -263,6 +263,72 @@ class JQuantsClient:
         logger.info(f"Fetching trading calendar")
         return self._get_all_pages("/markets/calendar", params)
 
+    # ─── Index Options (Nikkei 225) ──────────────────────────
+
+    def get_index_options_225(self, date: str | None = None) -> list[dict]:
+        """日経225オプション四本値を取得 (Standard以上, 10年分).
+
+        API path: /v2/derivatives/bars/daily/options/225
+        Required: date (YYYYMMDD).
+        """
+        if not date:
+            raise ValueError("get_index_options_225 requires a date parameter")
+        params = {"date": date}
+        logger.info(f"Fetching index options 225 (date={date})")
+        return self._get_all_pages("/derivatives/bars/daily/options/225", params)
+
+    # ─── Short Sale Report ───────────────────────────────────
+
+    def get_short_sale_report(self, disc_date: str | None = None,
+                              code: str | None = None,
+                              calc_date: str | None = None,
+                              disc_date_from: str | None = None,
+                              disc_date_to: str | None = None) -> list[dict]:
+        """空売り残高報告を取得 (Standard以上, 10年分).
+
+        API path: /v2/markets/short-sale-report
+        Required: at least one of code / disc_date / calc_date.
+        """
+        params: dict = {}
+        if code:
+            params["code"] = code
+        if disc_date:
+            params["disc_date"] = disc_date
+        if calc_date:
+            params["calc_date"] = calc_date
+        if disc_date_from:
+            params["disc_date_from"] = disc_date_from
+        if disc_date_to:
+            params["disc_date_to"] = disc_date_to
+        if not (code or disc_date or calc_date):
+            raise ValueError(
+                "get_short_sale_report requires one of code / disc_date / calc_date"
+            )
+        logger.info(
+            f"Fetching short-sale-report (code={code}, disc_date={disc_date}, "
+            f"calc_date={calc_date})"
+        )
+        return self._get_all_pages("/markets/short-sale-report", params)
+
+    # ─── Daily Margin Interest (margin-alert) ────────────────
+
+    def get_daily_margin_interest(self, date: str | None = None,
+                                  code: str | None = None) -> list[dict]:
+        """日々公表信用取引残高を取得 (Standard以上, 10年分).
+
+        API path: /v2/markets/margin-alert
+        Required: one of date / code.
+        """
+        params: dict = {}
+        if date:
+            params["date"] = date
+        if code:
+            params["code"] = code
+        if not (date or code):
+            raise ValueError("get_daily_margin_interest requires date or code")
+        logger.info(f"Fetching margin-alert (date={date}, code={code})")
+        return self._get_all_pages("/markets/margin-alert", params)
+
     # ─── Utility ─────────────────────────────────────────────
 
     def health_check(self) -> bool:

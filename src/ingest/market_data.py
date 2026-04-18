@@ -327,6 +327,210 @@ def ingest_earnings_calendar(client: JQuantsClient, loader: BQLoader, config) ->
     )
 
 
+_SHORT_SALE_COLMAP = {
+    "DiscDate": "disc_date", "CalcDate": "calc_date", "Code": "code",
+    "SSName": "ss_name", "SSAddr": "ss_addr",
+    "DICName": "dic_name", "DICAddr": "dic_addr",
+    "FundName": "fund_name",
+    "ShrtPosToSO": "shrt_pos_to_so",
+    "ShrtPosShares": "shrt_pos_shares",
+    "ShrtPosUnits": "shrt_pos_units",
+    "PrevRptDate": "prev_rpt_date",
+    "PrevRptRatio": "prev_rpt_ratio",
+    "Notes": "notes",
+}
+
+
+def ingest_short_sale_report(client: JQuantsClient, loader: BQLoader, config,
+                              target_date: str | None = None,
+                              max_catchup_days: int = 30) -> int:
+    """空売り残高報告の取込み (Standard以上).
+
+    Publishes rows when short position ≥ 0.5% of SO is filed.
+    target_date is None → catch-up from BQ latest disc_date + 1 to yesterday.
+    """
+    if target_date is not None:
+        return _short_sale_one_day(client, loader, config, target_date)
+
+    latest = loader.get_latest_date(
+        f"{config.ds_raw}.short_sale_report", "disc_date"
+    )
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    if latest:
+        start = datetime.strptime(str(latest)[:10], "%Y-%m-%d").date() + timedelta(days=1)
+    else:
+        start = today - timedelta(days=max_catchup_days - 1)
+    end = today - timedelta(days=1)
+    if start > end:
+        logger.info("short_sale_report already up to date")
+        return 0
+    span = (end - start).days + 1
+    if span > max_catchup_days:
+        start = end - timedelta(days=max_catchup_days - 1)
+    logger.info("short_sale_report catch-up: %s .. %s", start, end)
+
+    total = 0
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:
+            try:
+                total += _short_sale_one_day(client, loader, config,
+                                             cur.strftime("%Y%m%d"))
+            except Exception as e:
+                logger.warning("short_sale %s failed: %s", cur, e)
+        cur += timedelta(days=1)
+    return total
+
+
+def _short_sale_one_day(client: JQuantsClient, loader: BQLoader, config,
+                        target_date: str) -> int:
+    try:
+        data = client.get_short_sale_report(disc_date=target_date)
+    except Exception as e:
+        msg = str(e)
+        if "400" in msg or "403" in msg:
+            logger.info("No short_sale_report for %s", target_date)
+            return 0
+        raise
+    if not data:
+        return 0
+
+    df = pd.DataFrame(data)
+    rename = {k: v for k, v in _SHORT_SALE_COLMAP.items() if k in df.columns}
+    df = df.rename(columns=rename)
+    df = df.loc[:, ~df.columns.duplicated()]
+    keep = [v for v in dict.fromkeys(_SHORT_SALE_COLMAP.values()) if v in df.columns]
+    df = df[keep]
+
+    for c in ("disc_date", "calc_date", "prev_rpt_date"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+    for c in ("shrt_pos_to_so", "shrt_pos_shares", "shrt_pos_units", "prev_rpt_ratio"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("code", "ss_name", "ss_addr", "dic_name", "dic_addr",
+              "fund_name", "notes"):
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str)
+    df = df.drop_duplicates(subset=["disc_date", "code", "ss_name", "fund_name"])
+
+    return loader.merge_dataframe(
+        df, f"{config.ds_raw}.short_sale_report",
+        merge_keys=["disc_date", "code", "ss_name", "fund_name"],
+        staging_table=f"{config.ds_raw}.short_sale_report_staging",
+    )
+
+
+_DAILY_MARGIN_COLMAP = {
+    "PubDate": "pub_date", "Code": "code", "AppDate": "app_date",
+    "ShrtOut": "shrt_out", "ShrtOutChg": "shrt_out_chg",
+    "ShrtOutRatio": "shrt_out_ratio",
+    "LongOut": "long_out", "LongOutChg": "long_out_chg",
+    "LongOutRatio": "long_out_ratio",
+    "SLRatio": "sl_ratio",
+    "ShrtNegOut": "shrt_neg_out", "ShrtNegOutChg": "shrt_neg_out_chg",
+    "ShrtStdOut": "shrt_std_out", "ShrtStdOutChg": "shrt_std_out_chg",
+    "LongNegOut": "long_neg_out", "LongNegOutChg": "long_neg_out_chg",
+    "LongStdOut": "long_std_out", "LongStdOutChg": "long_std_out_chg",
+    "TSEMrgnRegCls": "tse_mrgn_reg_cls",
+}
+
+
+def _flatten_pub_reason(rows: list[dict]) -> None:
+    for r in rows:
+        pr = r.pop("PubReason", None) or {}
+        r["pub_reason_restricted"] = str(pr.get("Restricted", ""))
+        r["pub_reason_daily_publication"] = str(pr.get("DailyPublication", ""))
+        r["pub_reason_monitoring"] = str(pr.get("Monitoring", ""))
+        r["pub_reason_restricted_by_jsf"] = str(pr.get("RestrictedByJSF", ""))
+        r["pub_reason_precaution_by_jsf"] = str(pr.get("PrecautionByJSF", ""))
+        r["pub_reason_unclear_or_sec_on_alert"] = str(pr.get("UnclearOrSecOnAlert", ""))
+
+
+def ingest_daily_margin_interest(client: JQuantsClient, loader: BQLoader, config,
+                                  target_date: str | None = None,
+                                  max_catchup_days: int = 30) -> int:
+    """日々公表信用取引残高 (margin-alert) の取込み (Standard以上)."""
+    if target_date is not None:
+        return _daily_margin_one_day(client, loader, config, target_date)
+
+    latest = loader.get_latest_date(
+        f"{config.ds_raw}.daily_margin_interest", "pub_date"
+    )
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    if latest:
+        start = datetime.strptime(str(latest)[:10], "%Y-%m-%d").date() + timedelta(days=1)
+    else:
+        start = today - timedelta(days=max_catchup_days - 1)
+    end = today - timedelta(days=1)
+    if start > end:
+        logger.info("daily_margin_interest already up to date")
+        return 0
+    span = (end - start).days + 1
+    if span > max_catchup_days:
+        start = end - timedelta(days=max_catchup_days - 1)
+    logger.info("daily_margin_interest catch-up: %s .. %s", start, end)
+
+    total = 0
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:
+            try:
+                total += _daily_margin_one_day(client, loader, config,
+                                               cur.strftime("%Y%m%d"))
+            except Exception as e:
+                logger.warning("daily_margin %s failed: %s", cur, e)
+        cur += timedelta(days=1)
+    return total
+
+
+def _daily_margin_one_day(client: JQuantsClient, loader: BQLoader, config,
+                          target_date: str) -> int:
+    try:
+        data = client.get_daily_margin_interest(date=target_date)
+    except Exception as e:
+        msg = str(e)
+        if "400" in msg or "403" in msg:
+            logger.info("No daily_margin for %s", target_date)
+            return 0
+        raise
+    if not data:
+        return 0
+
+    # Mutates data in place, flattening the PubReason nested struct.
+    _flatten_pub_reason(data)
+
+    df = pd.DataFrame(data)
+    rename = {k: v for k, v in _DAILY_MARGIN_COLMAP.items() if k in df.columns}
+    df = df.rename(columns=rename)
+    df = df.loc[:, ~df.columns.duplicated()]
+    keep = [v for v in dict.fromkeys(_DAILY_MARGIN_COLMAP.values()) if v in df.columns]
+    keep += [c for c in df.columns if c.startswith("pub_reason_")]
+    df = df[list(dict.fromkeys(keep))]
+
+    for c in ("pub_date", "app_date"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+    for c in ("shrt_out_ratio", "long_out_ratio", "tse_mrgn_reg_cls"):
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str)
+    for c in list(df.columns):
+        if c in ("pub_date", "app_date", "code", "tse_mrgn_reg_cls",
+                 "shrt_out_ratio", "long_out_ratio") or c.startswith("pub_reason_"):
+            continue
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "code" in df.columns:
+        df["code"] = df["code"].astype(str)
+
+    df = df.drop_duplicates(subset=["pub_date", "code", "app_date"])
+
+    return loader.merge_dataframe(
+        df, f"{config.ds_raw}.daily_margin_interest",
+        merge_keys=["pub_date", "code", "app_date"],
+        staging_table=f"{config.ds_raw}.daily_margin_interest_staging",
+    )
+
+
 def ingest_trading_calendar(client: JQuantsClient, loader: BQLoader, config) -> int:
     """取引カレンダーの取込み（/markets/calendar, 全件洗い替え）。
 
