@@ -237,6 +237,14 @@ def run_init(client: JQuantsClient, loader: BQLoader, config: Config):
         logger.warning(f"ingest_earnings_calendar skipped: {e}")
         results["earnings_calendar"] = 0
 
+    # 10. 取引カレンダー
+    from src.ingest.market_data import ingest_trading_calendar
+    try:
+        results["trading_calendar"] = ingest_trading_calendar(client, loader, config)
+    except Exception as e:
+        logger.warning(f"ingest_trading_calendar skipped: {e}")
+        results["trading_calendar"] = 0
+
     logger.info("=== 初期ロード結果 ===")
     for name, count in results.items():
         logger.info(f"  {name}: {count:,} rows")
