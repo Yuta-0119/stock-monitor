@@ -138,6 +138,42 @@ class BQLoader:
         on_clause = " AND ".join(
             [f"T.`{k}` = {_src_ref(k)}" for k in merge_keys]
         )
+
+        # Partition-filter hint for tables with require_partition_filter=true.
+        # BigQuery cannot infer partition elimination from `T.date = S.date`
+        # alone (S.date is unknown at planning time), so for DATE-partitioned
+        # targets we inject a static BETWEEN range derived from the staged df.
+        # Harmless when target is not partition-filter-enforced — just gives BQ
+        # a partition-prune hint that also slightly speeds up the MERGE.
+        # Observed failure (2026-04-20 GitHub Actions run 24660120082):
+        #   BadRequest: Cannot query over table
+        #   'onitsuka-app.raw.stock_prices_daily' without a filter over
+        #   column(s) 'date' that can be used for partition elimination
+        partition_cols_candidates = [
+            "date", "trade_date", "disclosed_date",
+            "snapshot_time", "pub_date", "published_date",
+        ]
+        for pc in partition_cols_candidates:
+            if pc in merge_keys and pc in df.columns and not df[pc].isna().all():
+                try:
+                    series = pd.to_datetime(df[pc], errors="coerce").dropna()
+                    if series.empty:
+                        continue
+                    dmin = series.min().strftime("%Y-%m-%d")
+                    dmax = series.max().strftime("%Y-%m-%d")
+                    on_clause += (
+                        f" AND T.`{pc}` BETWEEN DATE '{dmin}' AND DATE '{dmax}'"
+                    )
+                    logger.info(
+                        f"Added partition filter: T.{pc} BETWEEN "
+                        f"{dmin} AND {dmax}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not derive partition filter for {pc}: {e}"
+                    )
+                break  # only one partition column per table
+
         update_cols = [c for c in df.columns if c not in merge_keys]
         insert_cols = ", ".join([f"`{c}`" for c in df.columns])
         insert_vals = ", ".join([_src_ref(c) for c in df.columns])
@@ -192,23 +228,60 @@ class BQLoader:
     def get_latest_date(self, table_id: str, date_column: str = "date") -> str | None:
         """Return MAX(date_column) as 'YYYY-MM-DD' or None if empty / errored.
 
-        Uses the row iterator (not .to_dataframe()) to avoid the pandas-gbq /
-        db-dtypes dependency chain that silently fails inside GitHub Actions
-        runners. Failures are still logged so partial-progress is diagnosable
-        instead of vanishing into a swallowed exception.
+        Strategy (2026-04-20 update):
+          1. First try INFORMATION_SCHEMA.PARTITIONS — this does NOT scan data
+             and is not affected by require_partition_filter=true. Works for
+             any DATE/DAY-partitioned table including stock_prices_daily,
+             stock_prices_minute, financial_summary.
+          2. Fall back to `SELECT MAX(date_column)` for non-partitioned tables
+             or when the partition introspection fails.
+
+        Failures are logged so partial-progress is diagnosable instead of
+        vanishing into a swallowed exception.
         """
         import logging as _lg
         _log = _lg.getLogger(__name__)
+
+        # Split table_id into dataset.table — INFORMATION_SCHEMA needs these
+        parts = table_id.split(".")
+        if len(parts) != 2:
+            _log.warning("get_latest_date: expected 'dataset.table', got %r", table_id)
+            return None
+        dataset, table_name = parts
+
+        # Path 1: INFORMATION_SCHEMA.PARTITIONS (metadata-only, no data scan)
+        try:
+            sql = f"""
+            SELECT MAX(PARSE_DATE('%Y%m%d', partition_id)) AS max_date
+            FROM `{self.project}.{dataset}.INFORMATION_SCHEMA.PARTITIONS`
+            WHERE table_name = @table_name
+              AND partition_id NOT IN ('__NULL__', '__UNPARTITIONED__')
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
+                ]
+            )
+            rows = list(self.client.query(sql, job_config=job_config).result())
+            if rows and rows[0][0] is not None:
+                return str(rows[0][0])[:10]
+        except Exception as e:
+            _log.debug(
+                "INFORMATION_SCHEMA.PARTITIONS lookup failed for %s (%s) — "
+                "falling back to SELECT MAX()", table_id, e,
+            )
+
+        # Path 2: fallback for non-partitioned tables or metadata-unavailable
         full_table = f"{self.project}.{table_id}"
         try:
             sql = f"SELECT MAX({date_column}) AS max_date FROM `{full_table}`"
             rows = list(self.client.query(sql).result())
             if not rows:
                 return None
-            max_date = rows[0][0]  # value of MAX(...)
+            max_date = rows[0][0]
             if max_date is None:
                 return None
-            return str(max_date)[:10]  # 'YYYY-MM-DD' (handles date / datetime / Timestamp)
+            return str(max_date)[:10]
         except Exception as e:
             _log.warning("get_latest_date(%s, %s) failed: %s", table_id, date_column, e)
             return None
