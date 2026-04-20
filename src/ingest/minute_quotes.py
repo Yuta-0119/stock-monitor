@@ -101,21 +101,22 @@ def ingest_minute(client: JQuantsClient, loader: BQLoader, config,
         # Explicit single-day mode
         return _fetch_and_load_one_day(client, loader, config, target_date)
 
-    # Auto-backfill mode: fill any gap from (latest+1) to today
-    # Use a direct query with cache disabled to avoid stale query cache.
-    from google.cloud import bigquery as _bq
-    full_table = f"{loader.project}.{config.ds_raw}.stock_prices_minute"
-    job_config = _bq.QueryJobConfig(use_query_cache=False)
-    sql = f"SELECT MAX(date) AS max_date FROM `{full_table}`"
-    try:
-        result = loader.client.query(sql, job_config=job_config).result()
-        row = next(iter(result), None)
-        latest_date = row["max_date"] if row else None
-    except Exception as e:
-        logger.warning(f"get latest date failed: {e}")
+    # Auto-backfill mode: fill any gap from (latest+1) to today.
+    # Use loader.get_latest_date() which handles require_partition_filter=true
+    # via INFORMATION_SCHEMA.PARTITIONS. Previously this was an inline
+    # `SELECT MAX(date) FROM stock_prices_minute` that silently failed on
+    # partition-filter-enforced tables → fallback to today-only fetch.
+    table_id = f"{config.ds_raw}.stock_prices_minute"
+    latest_str = loader.get_latest_date(table_id, date_column="date")
+    if latest_str:
+        try:
+            latest_date = datetime.strptime(latest_str, "%Y-%m-%d").date()
+        except ValueError:
+            latest_date = None
+    else:
         latest_date = None
 
-    logger.info(f"DEBUG: fresh MAX(date)={latest_date!r} from {full_table}")
+    logger.info(f"DEBUG: MAX(date)={latest_date!r} from {loader.project}.{table_id}")
 
     if latest_date is None:
         # No data in table → fetch today only (init-like behavior)
